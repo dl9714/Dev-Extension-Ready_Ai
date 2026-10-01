@@ -4,9 +4,9 @@
 
 ## 현재 기준
 
-- 검증팩: V1.6.0
-- 적용 앱: 2026-08-20.3
-- 자동 검증: GPT 8개, Gemini 6개, AI Studio 5개를 플랫폼 전환 탭과 5개 카테고리로 분리하고 앱 `2026-08-20.3`에서 빠른 전체검증 1회 통과
+- 검증팩: V1.7.0
+- 적용 앱: 2026-10-02.7
+- 자동 검증: GPT 8개, Gemini 6개, AI Studio 5개를 플랫폼 전환 탭과 5개 카테고리로 분리하고 앱 `2026-10-02.7`에서 전체검증 5회 통과
 - 무작위 상태 경로: 회당 125,000개
 - 실웹 검증: GPT 9개, Gemini 6개, AI Studio 5개로 분리. GPT-WEB-01·07은 앱 `2026-08-19.6`에서 기준선 통과, 나머지는 각 서비스 대변동 시 실행
 
@@ -69,15 +69,15 @@
 
 | ID | 항목 버전 | 마지막 통과 앱 | 플랫폼 | 카테고리 | 범위 | 실행 파일 |
 |---|---:|---|---|---|---|---|
-| KEY-01 | 2.1 | 2026-08-20.3 | GPT | 입력·단축키 | Ctrl/Cmd+Enter 직후 후속 Enter 전환과 빠른 반복 중복 차단 | `tools/test-ctrl-enter-followup-handoff.js` |
-| IMG-01 | 2.0 | 2026-08-20.3 | GPT | 생성·편집 | 이미지 편집 모달, 전송 확인, 이미지 생성 감지 | `tools/test-chatgpt-image-editing.js` |
-| STRESS-01 | 2.0 | 2026-08-20.3 | GPT·Gemini | 입력·단축키 | 키 순서·속도·안정 전송·메모리 스트레스 | `tools/test-ctrl-enter-stress.js` |
-| ROUTE-01 | 1.1 | 2026-08-20.3 | GPT·Gemini | 후속·대기열 | Enter 라우팅과 앱 버전 정합성 | `tools/test-enter-routing.js` |
-| AISTUDIO-01 | 1.0 | 2026-08-20.3 | AIS | 생성·편집 | AI Studio 생성·완료·후속 전송 | `tools/test-aistudio-followup.js` |
-| WAKE-01 | 1.0 | 2026-08-20.3 | 공통 | 복구·환경 | 절전·복귀·네트워크 복구 | `tools/test-sleep-resume-recovery.js` |
-| RECOVERY-01 | 1.0 | 2026-08-20.3 | 공통 | 복구·환경 | 중복 방지와 콘텐츠 복구 | `tools/test-content-recovery.js` |
-| LAYOUT-01 | 1.0 | 2026-08-20.3 | 공통 | UI·레이아웃 | 후속 패널 위치와 화면 경계 | `tools/test-steering-position.js` |
-| UI-01 | 1.0 | 2026-08-20.3 | 공통 | UI·레이아웃 | 검증 센터 UI, JSON, 앱 버전 일치 | `tools/test-verification-center.js` |
+| KEY-01 | 2.1 | 2026-10-02.7 | GPT | 입력·단축키 | Ctrl/Cmd+Enter 직후 후속 Enter 전환과 빠른 반복 중복 차단 | `tools/test-ctrl-enter-followup-handoff.js` |
+| IMG-01 | 2.0 | 2026-10-02.7 | GPT | 생성·편집 | 이미지 편집 모달, 전송 확인, 이미지 생성 감지 | `tools/test-chatgpt-image-editing.js` |
+| STRESS-01 | 2.0 | 2026-10-02.7 | GPT·Gemini | 입력·단축키 | 키 순서·속도·안정 전송·메모리 스트레스 | `tools/test-ctrl-enter-stress.js` |
+| ROUTE-01 | 1.1 | 2026-10-02.7 | GPT·Gemini | 후속·대기열 | Enter 라우팅과 앱 버전 정합성 | `tools/test-enter-routing.js` |
+| AISTUDIO-01 | 1.0 | 2026-10-02.7 | AIS | 생성·편집 | AI Studio 생성·완료·후속 전송 | `tools/test-aistudio-followup.js` |
+| WAKE-01 | 1.0 | 2026-10-02.7 | 공통 | 복구·환경 | 절전·복귀·네트워크 복구 | `tools/test-sleep-resume-recovery.js` |
+| RECOVERY-01 | 1.1 | 2026-10-02.7 | 공통 | 복구·환경 | 중복 방지, Pro 장기 대기, 대화 왕복 경합, 사용 중지와 파일 복구 | `tools/test-content-recovery.js` |
+| LAYOUT-01 | 1.0 | 2026-10-02.7 | 공통 | UI·레이아웃 | 후속 패널 위치와 화면 경계 | `tools/test-steering-position.js` |
+| UI-01 | 1.0 | 2026-10-02.7 | 공통 | UI·레이아웃 | 검증 센터 UI, JSON, 앱 버전 일치 | `tools/test-verification-center.js` |
 
 ## 플랫폼별 실웹 수동 시나리오
 

@@ -89,7 +89,7 @@ function ensureTitleGuardMessageBridge() {
   if (titleGuardBridgeBound) return;
   titleGuardBridgeBound = true;
   try {
-    window.addEventListener('message', (event) => {
+    addReadyAiEventListener(window, 'message', (event) => {
       if (event.source !== window) return;
       const data = event.data || {};
       if (data.source !== 'Ready_Ai') return;
@@ -463,7 +463,17 @@ function setChatGptLightGenerating(nextGenerating, options = {}) {
     const observed = Object.prototype.hasOwnProperty.call(options, 'observed')
       ? !!options.observed
       : detectChatGptGeneratingLight();
-    chatGptLightGenerationStartedAt = Date.now();
+    if (!steeringAwaitingTurnCompletion) {
+      captureSteeringChatGptAssistantBaseline();
+      // A tab may reconnect after the response has already begun.
+      if (observed && steeringChatGptAssistantBaseline?.count && !steeringChatGptAssistantBaseline.finalized) {
+        steeringChatGptAssistantBaseline = { ...steeringChatGptAssistantBaseline, count: steeringChatGptAssistantBaseline.count - 1, identity: '' };
+      }
+      steeringAwaitingTurnCompletion = true;
+      steeringObservedGenerationSinceSend = false;
+      armSteeringTurnCompletionWatchdog();
+    }
+    if (!chatGptLightGenerationStartedAt) chatGptLightGenerationStartedAt = Date.now();
     chatGptLightGenerationWatchUntil = Date.now() + 10 * 60 * 1000;
     steeringLastCompletionAt = 0;
     clearSteeringAutoSendTimer();
@@ -509,6 +519,8 @@ function scheduleChatGptLightCompletionWatch(delay = 900) {
   chatGptLightCompletionWatchTimer = setTimeout(() => {
     chatGptLightCompletionWatchTimer = null;
     if (!isChatGptSafeMode() || !monitoring || !IS_TOP_FRAME) return;
+    if (syncSteeringConversationScope()) return;
+    if (steeringStateRestoring) { scheduleChatGptLightCompletionWatch(500); return; }
     const now = Date.now();
     const generatingNow = detectChatGptGeneratingLight();
     if (generatingNow) {
@@ -530,14 +542,14 @@ function scheduleChatGptLightCompletionWatch(delay = 900) {
         steeringAwaitingTurnCompletion
         && !steeringObservedGenerationSinceSend
       );
-      if (awaitingUnobservedSteeringTurn && now < chatGptLightGenerationWatchUntil) {
+      if (awaitingUnobservedSteeringTurn) {
         scheduleChatGptLightCompletionWatch(document.hidden ? 1800 : 900);
         return;
       }
       setChatGptLightGenerating(false);
       return;
     }
-    if (now < chatGptLightGenerationWatchUntil) {
+    if (steeringAwaitingTurnCompletion || now < chatGptLightGenerationWatchUntil) {
       scheduleChatGptLightCompletionWatch(700);
     }
   }, Math.max(0, Number(delay) || 0));
@@ -585,31 +597,44 @@ function noteChatGptLightPossibleSend(event) {
   const isSend = event?.type === 'click' ? isChatGptLightSendClick(event) : isChatGptLightSendKey(event);
   if (!isSend) return;
   armChatGptLightTitleBadgeBurst();
-  setTimeout(() => setChatGptLightGenerating(true, { observed: false }), 120);
+  const baseline = !isGenerating ? getChatGptAssistantTurnSnapshot() : null;
+  if (!hasChatGptConversationTurns()) steeringConversationStartPendingUntil = Date.now() + 15000;
+  const instanceSeq = getReadyAiContentInstanceSeq();
+  setTimeout(() => {
+    if (!isReadyAiCurrentContentInstance(instanceSeq)) return;
+    if (event.defaultPrevented || isGenerating) return;
+    if (baseline) steeringChatGptAssistantBaseline = baseline;
+    steeringChatGptAssistantObservedAt = 0;
+    steeringChatGptAssistantFinalizedAt = 0;
+    steeringAwaitingTurnCompletion = true;
+    steeringObservedGenerationSinceSend = false;
+    armSteeringTurnCompletionWatchdog();
+    setChatGptLightGenerating(true, { observed: false });
+  }, 120);
 }
 function bindChatGptLightTitleBadgeTriggers() {
   if (chatGptLightTitleBadgeTriggersBound || !IS_TOP_FRAME) return;
   chatGptLightTitleBadgeTriggersBound = true;
-  document.addEventListener('click', (event) => {
+  addReadyAiEventListener(document, 'click', (event) => {
     if (!isChatGptSafeMode()) return;
     scheduleChatGptLightTitleBadgeSync(60);
     noteChatGptLightPossibleSend(event);
   }, true);
-  document.addEventListener('keydown', (event) => {
+  addReadyAiEventListener(document, 'keydown', (event) => {
     if (!isChatGptSafeMode()) return;
     scheduleChatGptLightTitleBadgeSync(60);
     noteChatGptLightPossibleSend(event);
   }, true);
-  document.addEventListener('input', () => {
+  addReadyAiEventListener(document, 'input', () => {
     if (!isChatGptSafeMode()) return;
     scheduleChatGptLightTitleBadgeSync(120);
   }, true);
-  document.addEventListener('visibilitychange', () => {
+  addReadyAiEventListener(document, 'visibilitychange', () => {
     if (!isChatGptSafeMode()) return;
     armChatGptLightTitleBadgeBurst();
     startChatGptLightTitleBadgeKeepAlive();
   });
-  window.addEventListener('pageshow', () => {
+  addReadyAiEventListener(window, 'pageshow', () => {
     if (!isChatGptSafeMode()) return;
     armChatGptLightTitleBadgeBurst();
     startChatGptLightTitleBadgeKeepAlive();
@@ -619,7 +644,7 @@ var STEERING_AUTO_SEND_DELAY_MS = 1000;
 var STEERING_TURN_WATCHDOG_VISIBLE_MS = 12000;
 var STEERING_TURN_WATCHDOG_HIDDEN_MS = 20000;
 var READY_AI_CONTENT_VERSION = '2026-06-12.21-single-queue-dispatch';
-var READY_AI_CONTENT_BUILD_VERSION = '2026-08-20.3-platform-tabs';
+var READY_AI_CONTENT_BUILD_VERSION = '2026-10-02.7-safe-session-recovery';
 var READY_AI_CANONICAL_EXTENSION_ID = 'jmgnmeaiahlpbbgnocmognokfecofkma';
 var readyAiDuplicateContentInstance = false;
 function getReadyAiExtensionId() {
@@ -741,6 +766,7 @@ var STEERING_THEME = Object.freeze({
   LIGHT: 'light',
 });
 var steeringEnabled = true;
+var readyAiEnabled = true;
 var steeringTheme = STEERING_THEME.DARK;
 var steeringLauncherVisible = true;
 var steeringAutoFocusInput = true;
@@ -822,6 +848,8 @@ var steeringQueueRenderSignature = '';
 var steeringPreviewRenderSignature = '';
 var steeringTemplateRenderSignature = '';
 var steeringUiRafId = 0;
+var steeringOverlayObserver = null;
+var steeringOverlayRafId = 0;
 var steeringLastPositionSignature = '';
 var steeringAppliedThemeSignature = '';
 var steeringConversationTurnsCacheAt = 0;
@@ -834,6 +862,269 @@ var steeringQueueEditingText = '';
 var steeringDragActive = false;
 var steeringDragHideTimer = null;
 var steeringDropPointerGuardUntil = 0;
+var steeringStateRestoring = false;
+var steeringSessionRestoreSeq = 0;
+var steeringSessionStorageFailed = false;
+var steeringRestoredQueuePaused = false;
+var steeringSessionSaveTimer = null;
+var steeringSessionSaveTail = Promise.resolve();
+var steeringSessionSavedSignature = '';
+var steeringSessionFileCache = new WeakMap();
+var steeringSessionLastSavedAt = 0;
+var steeringChatGptSubmissionUncertain = false;
+var steeringConversationScope = getSteeringConversationScope();
+var steeringConversationSessionToken = crypto.randomUUID();
+var steeringConversationSessions = globalThis.__ReadyAiConversationSessions || new Map();
+globalThis.__ReadyAiConversationSessions = steeringConversationSessions;
+var steeringConversationStartPendingUntil = 0;
+function getSteeringConversationScope(url = location.href) {
+  if (!isChatGptSafeMode()) return 'site';
+  const path = new URL(url).pathname;
+  const match = path.match(/\/c\/([^/]+)/);
+  return match ? `conversation:${match[1]}` : `draft:${path}`;
+}
+async function waitForSteeringConversationView(state, scope) {
+  if (!isChatGptSafeMode()) return true;
+  const expected = state?.viewUser;
+  const deadline = Date.now() + 5000;
+  while (Date.now() <= deadline) {
+    if (getSteeringConversationScope() !== scope) return false;
+    const current = getChatGptUserTurnSnapshot();
+    if (scope.startsWith('draft:') && current.count === 0) return true;
+    if (!scope.startsWith('draft:') && (!expected?.identity || current.identity === expected.identity)) return true;
+    await waitForSteeringTick(100);
+  }
+  return false;
+}
+function syncSteeringConversationScope() {
+  if (!IS_TOP_FRAME || !isChatGptSafeMode() || !monitoring) return false;
+  const next = getSteeringConversationScope();
+  if (next === steeringConversationScope) return false;
+  const state = steeringStateRestoring ? null : captureSteeringSessionState();
+  if (state && steeringConversationScope.startsWith('draft:') && next.startsWith('conversation:')
+    && (steeringProcessing || steeringAwaitingTurnCompletion || Date.now() < steeringConversationStartPendingUntil)) {
+    // The first real submission assigns an ID to this same new conversation.
+    persistSteeringSessionState({ ...state, queue: [], attachments: [], draft: '', editingId: null, editingText: '' }).catch(() => {});
+    steeringConversationSessions.delete(steeringConversationScope);
+    steeringConversationScope = next;
+    state.scope = next;
+    steeringConversationSessions.set(next, state);
+    scheduleSteeringSessionSave();
+    return false;
+  }
+  if (state) {
+    steeringConversationSessions.set(steeringConversationScope, state);
+    persistSteeringSessionState().catch(() => {});
+  }
+  clearSteeringAutoSendTimer();
+  clearSteeringSendLock();
+  clearChatGptLightCompletionWatch();
+  clearSteeringAwaitingResponseStart();
+  clearSteeringTurnCompletionWait();
+  steeringConversationScope = next;
+  steeringConversationSessionToken = crypto.randomUUID();
+  steeringConversationStartPendingUntil = 0;
+  steeringQueue = [];
+  steeringQueueSeq = 1;
+  steeringAttachments = [];
+  steeringQueueEditingId = null;
+  steeringQueueEditingText = '';
+  steeringRestoredQueuePaused = false;
+  steeringProcessing = false;
+  steeringSessionStorageFailed = false;
+  steeringSessionSavedSignature = '';
+  isGenerating = false;
+  completionStatus = 'idle';
+  steeringConversationTurnsCacheAt = 0;
+  setSteeringDraftText('', { syncInput: true });
+  restoreSteeringSessionState({ conversationSwitch: true });
+  updateSteeringUi();
+  return true;
+}
+function requestSteeringSessionStorage(action, payload = {}) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('대기 저장 연결 시간이 초과되었습니다.')), 10000);
+    try {
+      chrome.runtime.sendMessage({ action, platform: steeringSessionSiteKey || getSiteKey(), scope: steeringConversationScope, ...payload }, (response) => {
+        clearTimeout(timer);
+        const error = chrome.runtime.lastError;
+        if (error || !response?.ok) reject(new Error(error?.message || response?.message || '대기 목록을 저장하지 못했습니다.'));
+        else resolve(response);
+      });
+    } catch (error) { clearTimeout(timer); reject(error); }
+  });
+}
+function captureSteeringSessionState() {
+  return {
+    queue: steeringQueue.map((item) => ({ ...item, files: getSteeringQueueAttachments(item).slice(), images: undefined })),
+    queueSeq: steeringQueueSeq,
+    draft: String(steeringRefs?.input?.value ?? steeringDraftText ?? ''),
+    attachments: steeringAttachments.slice(),
+    attachmentSeq: steeringAttachmentSeq,
+    panelOpen: steeringPanelOpen,
+    siteKey: steeringSessionSiteKey,
+    scope: steeringConversationScope,
+    sessionToken: steeringConversationSessionToken,
+    viewUser: isChatGptSafeMode() ? getChatGptUserTurnSnapshot() : null,
+    paused: steeringRestoredQueuePaused || steeringProcessing,
+    awaiting: steeringAwaitingTurnCompletion,
+    observed: steeringObservedGenerationSinceSend,
+    baseline: steeringChatGptAssistantBaseline,
+    observedAt: steeringChatGptAssistantObservedAt,
+    finalizedAt: steeringChatGptAssistantFinalizedAt,
+    generating: isGenerating,
+    startedAt: chatGptLightGenerationStartedAt,
+    watchUntil: chatGptLightGenerationWatchUntil,
+    editingId: steeringQueueEditingId,
+    editingText: steeringQueueEditingText,
+  };
+}
+function getSteeringSessionSignature(state) {
+  const files = (list) => list.map((item) => [item.name, item.size, item.type, getSteeringFileIdentity(item.file)]);
+  return JSON.stringify([state.scope, state.queue.map((item) => [item.id, item.text, !!item.holdForFirstChatGptTurn, files(item.files)]), state.draft, files(state.attachments), state.editingId, state.editingText, state.paused, !!state.panelOpen]);
+}
+async function saveSteeringSessionFile(item, scope = steeringConversationScope, platform = steeringSessionSiteKey || getSiteKey()) {
+  const file = item.file;
+  let cached = steeringSessionFileCache.get(file);
+  if (cached?.scope === scope && cached?.platform === platform) return cached;
+  const fileId = crypto.randomUUID();
+  const chunkSize = 1024 * 1024;
+  const chunks = Math.max(1, Math.ceil(file.size / chunkSize));
+  for (let index = 0; index < chunks; index += 1) {
+    const bytes = new Uint8Array(await file.slice(index * chunkSize, (index + 1) * chunkSize).arrayBuffer());
+    let binary = '';
+    for (let start = 0; start < bytes.length; start += 8192) binary += String.fromCharCode(...bytes.subarray(start, start + 8192));
+    await requestSteeringSessionStorage('steering_session_file_put', { scope, platform, fileId, chunkIndex: index, data: btoa(binary) });
+  }
+  cached = { fileId, chunks, scope, platform, name: item.name || file.name, type: item.type || file.type, size: file.size, lastModified: file.lastModified || 0, isImage: !!item.isImage };
+  steeringSessionFileCache.set(file, cached);
+  return cached;
+}
+async function saveSteeringSessionSnapshot(state, instanceSeq) {
+  if (!isReadyAiCurrentContentInstance(instanceSeq)) return false;
+  const signature = getSteeringSessionSignature(state);
+  if (state.scope === steeringConversationScope && signature === steeringSessionSavedSignature) return true;
+  const queue = [];
+  for (const item of state.queue) {
+    const files = [];
+    for (const file of item.files) files.push(await saveSteeringSessionFile(file, state.scope, state.siteKey));
+    queue.push({ ...item, files, images: undefined });
+  }
+  const attachments = [];
+  for (const file of state.attachments) attachments.push(await saveSteeringSessionFile(file, state.scope, state.siteKey));
+  if (!isReadyAiCurrentContentInstance(instanceSeq)) return false;
+  steeringSessionLastSavedAt = Math.max(Date.now(), steeringSessionLastSavedAt + 1);
+  await requestSteeringSessionStorage('steering_session_save', {
+    scope: state.scope, platform: state.siteKey,
+    state: { ...state, queue, attachments, savedAt: steeringSessionLastSavedAt },
+  });
+  if (state.scope === steeringConversationScope) steeringSessionSavedSignature = signature;
+  return true;
+}
+function persistSteeringSessionState(snapshot = null) {
+  if (!IS_TOP_FRAME || steeringStateRestoring || steeringSessionStorageFailed || !monitoring) return Promise.resolve(false);
+  const state = snapshot || captureSteeringSessionState();
+  const instanceSeq = getReadyAiContentInstanceSeq();
+  const pending = steeringSessionSaveTail.then(() => saveSteeringSessionSnapshot(state, instanceSeq));
+  // Keep subsequent saves working after a temporary storage/context error.
+  steeringSessionSaveTail = pending.catch(() => {});
+  return pending;
+}
+function scheduleSteeringSessionSave() {
+  if (!IS_TOP_FRAME || !monitoring || steeringStateRestoring || steeringSessionSaveTimer) return;
+  steeringSessionSaveTimer = setTimeout(() => {
+    steeringSessionSaveTimer = null;
+    persistSteeringSessionState().catch(() => setSteeringStatus('대기 목록 저장 실패: 현재 탭을 유지하고 다시 시도해 주세요.', true));
+  }, 120);
+}
+async function loadSteeringSessionFile(saved, scope = steeringConversationScope, platform = steeringSessionSiteKey || getSiteKey()) {
+  const parts = [];
+  for (let index = 0; index < saved.chunks; index += 1) {
+    const response = await requestSteeringSessionStorage('steering_session_file_get', { scope, platform, fileId: saved.fileId, chunkIndex: index });
+    const binary = atob(response.data);
+    parts.push(Uint8Array.from(binary, (char) => char.charCodeAt(0)));
+  }
+  const file = new File(parts, saved.name, { type: saved.type, lastModified: saved.lastModified });
+  if (file.size !== saved.size) throw new Error('첨부파일 복구가 완료되지 않았습니다.');
+  steeringSessionFileCache.set(file, saved);
+  return { ...saved, id: steeringAttachmentSeq++, file, previewUrl: saved.isImage ? URL.createObjectURL(file) : '' };
+}
+function applyRecoveredSteeringSession(state, live = false) {
+  // Keep this visit's token: an old send may finish after A -> B -> A.
+  steeringQueue = state.queue || [];
+  steeringQueueSeq = Math.max(state.queueSeq || 1, ...steeringQueue.map((item) => Number(item.id) + 1));
+  steeringAttachments = state.attachments || [];
+  steeringAttachmentSeq = Math.max(steeringAttachmentSeq, state.attachmentSeq || 1);
+  steeringPanelOpen = !!state.panelOpen;
+  steeringSessionSiteKey = state.siteKey || getSiteKey();
+  steeringRestoredQueuePaused = live ? !!state.paused : steeringQueue.length > 0;
+  steeringQueueEditingId = state.editingId ?? null;
+  steeringQueueEditingText = state.editingText || '';
+  setSteeringDraftText(state.draft || '', { syncInput: true });
+  if (live && state.awaiting) {
+    steeringAwaitingTurnCompletion = true;
+    steeringObservedGenerationSinceSend = !!state.observed;
+    steeringChatGptAssistantBaseline = state.baseline;
+    steeringChatGptAssistantObservedAt = state.observedAt || 0;
+    steeringChatGptAssistantFinalizedAt = state.finalizedAt || 0;
+    isGenerating = !!state.generating;
+    chatGptLightGenerationStartedAt = state.startedAt || Date.now();
+    chatGptLightGenerationWatchUntil = state.watchUntil || 0;
+    armSteeringTurnCompletionWatchdog();
+    if (isChatGptSafeMode()) scheduleChatGptLightCompletionWatch();
+  }
+  updateSteeringUi();
+}
+async function restoreSteeringSessionState(options = {}) {
+  if (!IS_TOP_FRAME) return;
+  const restoreSeq = ++steeringSessionRestoreSeq;
+  const instanceSeq = getReadyAiContentInstanceSeq();
+  const scope = steeringConversationScope;
+  const isCurrent = () => isReadyAiCurrentContentInstance(instanceSeq)
+    && steeringConversationScope === scope && steeringSessionRestoreSeq === restoreSeq;
+  const live = globalThis.__ReadyAiRecoveredSession;
+  globalThis.__ReadyAiRecoveredSession = null;
+  if (live && live.siteKey === getSiteKey() && (!live.scope || live.scope === scope)) {
+    applyRecoveredSteeringSession(live, true);
+    return;
+  }
+  steeringStateRestoring = true;
+  updateSteeringUi();
+  try {
+    const memoryState = steeringConversationSessions.get(scope);
+    const response = memoryState ? { state: memoryState } : await requestSteeringSessionStorage('steering_session_load', { scope });
+    const state = response.state;
+    if (!state) return;
+    if (!isCurrent()) return;
+    // Keep the recovered list visible and read-only while file chunks load.
+    applyRecoveredSteeringSession(state, !!memoryState);
+    setSteeringStatus('대기 목록과 첨부파일을 복구하는 중입니다.');
+    const queue = [];
+    for (const item of state.queue || []) {
+      const files = [];
+      for (const saved of item.files || []) files.push(saved.file ? saved : await loadSteeringSessionFile(saved, scope, state.siteKey));
+      queue.push({ ...item, files, images: files });
+    }
+    const attachments = [];
+    for (const saved of state.attachments || []) attachments.push(saved.file ? saved : await loadSteeringSessionFile(saved, scope, state.siteKey));
+    if (!isCurrent()) return;
+    if (options.conversationSwitch && !await waitForSteeringConversationView(state, scope)) state.paused = true;
+    if (!isCurrent()) return;
+    applyRecoveredSteeringSession({ ...state, queue, attachments }, !!memoryState);
+    setSteeringStatus(queue.length ? (memoryState && !state.paused ? '이 대화의 후속 대기를 이어갑니다.' : '이 대화의 대기를 복구했습니다. 확인 후 ‘다음 보내기’를 눌러 주세요.') : '이 대화의 작성 내용을 복구했습니다.');
+  } catch (_) {
+    if (isCurrent()) {
+      steeringSessionStorageFailed = true;
+      setSteeringStatus('대기 목록 복구 실패: 페이지를 다시 연결해 주세요. 저장된 목록은 유지합니다.', true);
+    }
+  } finally {
+    if (isCurrent()) {
+      steeringStateRestoring = false;
+      updateSteeringUi();
+      if (options.conversationSwitch && !steeringRestoredQueuePaused) scheduleSteeringQueueProcessing(STEERING_AUTO_SEND_DELAY_MS);
+    }
+  }
+}
 function setSteeringTextIfChanged(el, value) {
   if (!el) return;
   const nextValue = String(value ?? '');
@@ -969,6 +1260,7 @@ function syncSteeringQueueEditState() {
 }
 function resetSteeringSessionState(nextSiteKey = '') {
   steeringQueue = [];
+  steeringRestoredQueuePaused = false;
   steeringLastReportedQueueCount = null;
   steeringProcessing = false;
   steeringPanelOpen = false;

@@ -20,15 +20,15 @@ function extractFunction(source, name) {
 }
 
 assert.equal(suite.schemaVersion, 2, 'the platform-aware verification data has a known schema');
-assert.equal(suite.suiteVersion, '1.6.0', 'the platform-tab verification pack exposes its own version');
-assert.equal(suite.appVersion, '2026-08-20.3', 'the verification pack records the app build it covers');
+assert.equal(suite.suiteVersion, '1.7.0', 'the platform-tab verification pack exposes its own version');
+assert.equal(suite.appVersion, '2026-10-02.7', 'the verification pack records the app build it covers');
 assert.equal(suite.automated.status, 'passed', 'the automated verification result is explicit');
-assert.equal(suite.automated.repeatRounds, 1, 'routine policy and UI changes use one quick full round');
+assert.equal(suite.automated.repeatRounds, 5, 'critical recovery changes record five full rounds');
 assert.equal(suite.automated.randomizedPlansPerRound, 125000, 'randomized coverage is recorded per round');
 assert.deepEqual(
   Object.values(suite.automated.platformRuns).map((run) => [run.status, run.groups, run.rounds]),
-  [['passed', 8, 1], ['passed', 6, 1], ['passed', 5, 1]],
-  'the latest platform-specific quick runs are recorded'
+  [['passed', 8, 5], ['passed', 6, 5], ['passed', 5, 5]],
+  'the latest full runs cover each platform'
 );
 assert.equal(suite.cadencePolicy.mode, 'change_triggered', 'live verification follows change-triggered cadence');
 assert.equal(suite.cadencePolicy.routineRepeatRounds, 1, 'routine changes require one round');
@@ -90,10 +90,10 @@ assert.deepEqual(
   'live coverage is separated by platform'
 );
 
-assert.match(background, /2026-08-20\.3-platform-tabs/);
-assert.match(content, /2026-08-20\.3-platform-tabs/);
-assert.match(popupHtml, /Ready_Ai 0\.3\.9 · 2026-08-20\.3/);
-assert.match(popupHtml, /popup\.js\?v=2026-08-20\.3/);
+assert.match(background, /2026-10-02\.7-safe-session-recovery/);
+assert.match(content, /2026-10-02\.7-safe-session-recovery/);
+assert.match(popupHtml, /Ready_Ai 0\.3\.16/);
+assert.match(popupHtml, /popup\.js\?v=0\.3\.16/);
 assert.match(popupHtml, /id="verification-card"/);
 assert.match(popupHtml, /data-open-sheet="verification-sheet"/);
 assert.match(popupHtml, /id="verification-sheet"/);

@@ -14,32 +14,36 @@ function bindHandlersOnce() {
   // 이벤트 리스너 등록
   // - focus/keydown으로는 절대 지우지 않는다.
   // - "클릭" 또는 "스크롤(휠/스크롤 이벤트)"로만 ⚪ -> 🟢
-  document.addEventListener('click', markAsAcknowledged, true);
-  document.addEventListener('scroll', markAsAcknowledged, true);
-  document.addEventListener('wheel', markAsAcknowledged, { passive: true, capture: true });
-  document.addEventListener('click', noteAiStudioPossibleRun, true);
-  document.addEventListener('keydown', noteAiStudioPossibleRun, true);
-  document.addEventListener('keydown', handleChatGptNativeComposerFollowupEnter, true);
-  document.addEventListener('keydown', markTypingAcknowledged, true);
-  document.addEventListener('input', markTypingAcknowledged, true);
+  addReadyAiEventListener(document, 'click', markAsAcknowledged, true);
+  addReadyAiEventListener(document, 'scroll', markAsAcknowledged, true);
+  addReadyAiEventListener(document, 'wheel', markAsAcknowledged, { passive: true, capture: true });
+  addReadyAiEventListener(document, 'click', noteAiStudioPossibleRun, true);
+  addReadyAiEventListener(document, 'keydown', noteAiStudioPossibleRun, true);
+  addReadyAiEventListener(document, 'keydown', handleChatGptNativeComposerFollowupEnter, true);
+  addReadyAiEventListener(document, 'keydown', markTypingAcknowledged, true);
+  addReadyAiEventListener(document, 'click', scheduleSteeringOverlayYield, true);
+  addReadyAiEventListener(document, 'keydown', scheduleSteeringOverlayYield, true);
+  addReadyAiEventListener(document, 'input', markTypingAcknowledged, true);
   // 탭 활성/비활성 전환 시에도 상태 재평가(백그라운드 완료 감지 보강)
-  document.addEventListener('visibilitychange', () => {
+  addReadyAiEventListener(document, 'visibilitychange', () => {
     ensurePolling(true);
     armTitleBadgeStabilityWindow(1800);
     scheduleCheck(true);
     wakeSteeringQueueAfterVisibilityRestore('visibility');
   });
-  window.addEventListener('focus', () => {
+  addReadyAiEventListener(window, 'focus', () => {
     scheduleCheck(true);
     wakeSteeringQueueAfterVisibilityRestore('focus');
   });
-  window.addEventListener('pageshow', () => {
+  addReadyAiEventListener(window, 'pageshow', () => {
     scheduleCheck(true);
     wakeSteeringQueueAfterVisibilityRestore('pageshow');
   });
-  window.addEventListener('online', () => {
+  addReadyAiEventListener(window, 'online', () => {
     handleReadyAiSystemResume('network_online');
   });
+  addReadyAiEventListener(window, 'popstate', syncSteeringConversationScope);
+  if (window.navigation) addReadyAiEventListener(window.navigation, 'currententrychange', syncSteeringConversationScope);
 }
 // shadow DOM deep-scan / deep-observe는 Gemini 완료 감지 보강용이 핵심이라
 // 기본은 Gemini에서만 켠다.
@@ -126,6 +130,7 @@ function startMonitoring(site) {
 }
 function stopMonitoring() {
   syncSteeringDraftFromInput();
+  stopSteeringOverlayWatch();
   monitoring = false;
   activeSite = null;
   isGenerating = false;
@@ -174,6 +179,20 @@ function stopMonitoring() {
   hideSteeringUi();
 }
 var _bootRetryCount = 0;
+var steeringSessionRestoreStarted = false;
+function applyReadyAiUsageEnabled(enabled) {
+  readyAiEnabled = enabled !== false;
+  if (!readyAiEnabled) {
+    steeringRestoredQueuePaused = steeringQueue.length > 0;
+    for (const state of steeringConversationSessions.values()) {
+      if (state.queue?.length) state.paused = true;
+    }
+    persistSteeringSessionState().catch(() => {});
+    stopMonitoring();
+    return;
+  }
+  refreshSiteFromStorage();
+}
 function shouldSkipFrameMonitoringForSite(site) {
   if (IS_TOP_FRAME) return false;
   const key = String(site?.key || site?.detection || '').toLowerCase();
@@ -190,9 +209,12 @@ function refreshSiteFromStorage() {
     return;
   }
   chrome.storage.local.get([
+    'readyAiEnabled',
     window.ReadyAi.sites.STORAGE_KEYS.ENABLED_SITES,
     window.ReadyAi.sites.STORAGE_KEYS.CUSTOM_SITES,
   ], (res) => {
+    readyAiEnabled = res?.readyAiEnabled !== false;
+    if (!readyAiEnabled) { stopMonitoring(); return; }
     const enabledSites = window.ReadyAi.sites.ensureEnabledSitesObject(res?.enabledSites);
     const customSites = window.ReadyAi.sites.normalizeCustomSites(res?.customSites);
     // 1) 현재 프레임 URL로 먼저 판단
@@ -208,6 +230,10 @@ function refreshSiteFromStorage() {
         return;
       }
       startMonitoring(site);
+      if (!steeringSessionRestoreStarted) {
+        steeringSessionRestoreStarted = true;
+        restoreSteeringSessionState();
+      }
       return;
     }
     // 2) iframe인 경우: "탭 URL" 기준으로 다시 판단
@@ -231,8 +257,12 @@ function refreshSiteFromStorage() {
 }
 // 설정 변경 시(팝업에서 사이트 on/off 또는 custom 추가/삭제) 즉시 반영
 try {
-  chrome.storage.onChanged.addListener((changes, area) => {
+  globalThis.__ReadyAiStorageListener = (changes, area) => {
     if (area !== 'local') return;
+    if (changes.readyAiEnabled) {
+      applyReadyAiUsageEnabled(changes.readyAiEnabled.newValue !== false);
+      if (!readyAiEnabled) return;
+    }
     const siteConfigChanged = !!(changes.enabledSites || changes.customSites);
     if (siteConfigChanged) loadSteeringPrefs(() => {
       refreshSiteFromStorage();
@@ -287,9 +317,44 @@ try {
     if (changes.customTabTitles) {
       requestCustomTabTitleSync();
     }
-  });
+  };
+  chrome.storage.onChanged.addListener(globalThis.__ReadyAiStorageListener);
 } catch (_) {}
-refreshSiteFromStorage();
+function initializeReadyAiContent() {
+  // Mount as soon as body exists, including while deferred site scripts load.
+  if (isChatGptSafeMode() && !document.body) {
+    let initialized = false;
+    let observer = null;
+    let observingRoot = false;
+    const initializeWhenBodyExists = () => {
+      if (initialized) return;
+      if (document.body) {
+        initialized = true;
+        observer?.disconnect();
+        refreshSiteFromStorage();
+      } else if (observer && document.documentElement && !observingRoot) {
+        observer.disconnect();
+        observingRoot = true;
+        observer.observe(document.documentElement, { childList: true });
+      }
+    };
+    observer = new MutationObserver(initializeWhenBodyExists);
+    observer.observe(document, { childList: true });
+    (globalThis.__ReadyAiEventCleanups || (globalThis.__ReadyAiEventCleanups = [])).push(() => observer.disconnect());
+    addReadyAiEventListener(document, 'DOMContentLoaded', initializeWhenBodyExists, { once: true });
+    initializeWhenBodyExists();
+    return;
+  }
+  refreshSiteFromStorage();
+}
+globalThis.__ReadyAiCaptureSession = () => {
+  const state = steeringStateRestoring || steeringSessionStorageFailed ? null : captureSteeringSessionState();
+  if (steeringSessionSaveTimer) clearTimeout(steeringSessionSaveTimer);
+  if (steeringUiRafId) (window.cancelAnimationFrame || window.clearTimeout)(steeringUiRafId);
+  stopMonitoring();
+  return state;
+};
+initializeReadyAiContent();
 console.log('[Ready_Ai] content script loaded', READY_AI_CONTENT_BUILD_VERSION);
 // background(service_worker)에서 강제 체크 요청
 try {
@@ -317,7 +382,14 @@ try {
       try { sendResponse?.({ ok: false, skipped: true, duplicate: true, extensionId: getReadyAiExtensionId() }); } catch (_) {}
       return;
     }
+    if (msg.action === 'conversation_scope_changed') {
+      syncSteeringConversationScope();
+      try { sendResponse?.({ ok: true }); } catch (_) {}
+      return;
+    }
     if (msg.action === 'force_check') {
+      syncSteeringConversationScope();
+      if (steeringStateRestoring) { sendResponse?.({ ok: true, skipped: true }); return; }
       if (isChatGptSafeMode()) {
         armChatGptLightTitleBadgeBurst();
         if (detectChatGptGeneratingLight()) setChatGptLightGenerating(true, { observed: true });

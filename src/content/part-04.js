@@ -388,14 +388,28 @@ function setControlValue(el, value) {
 function waitForSteeringTick(ms = 80) {
   return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
 }
+function getChatGptUserTurnSnapshot() {
+  const nodes = Array.from(document.querySelectorAll('[data-message-author-role="user"]'));
+  const last = nodes[nodes.length - 1];
+  return { count: nodes.length, identity: last?.getAttribute?.('data-message-id') || last?.closest?.('[data-testid^="conversation-turn-"]')?.getAttribute?.('data-testid') || '', text: String(last?.textContent || '').replace(/\s+/g, ' ').trim() };
+}
 async function waitForSubmissionStart(composer, beforeText, timeout = 900, options = {}) {
   const baseline = String(beforeText || '').trim();
   const hadConversationTurns = !!options.hadConversationTurns;
   const beforeUrl = String(options.beforeUrl || location.href || '');
   const deadline = Date.now() + Math.max(120, timeout);
   while (Date.now() <= deadline) {
+    if (options.sessionToken && options.sessionToken !== steeringConversationSessionToken) return false;
     try { maybeRescanShadowRoots(); } catch (_) {}
     const current = String(getCurrentComposerText(composer) || '').trim();
+    if (options.chatGptUserBaseline) {
+      const before = options.chatGptUserBaseline;
+      const after = getChatGptUserTurnSnapshot();
+      const advanced = after.count > before.count || (!!after.identity && after.identity !== before.identity && after.count >= before.count);
+      if (advanced && (!baseline || after.text.includes(baseline.replace(/\s+/g, ' ')))) return true;
+      await waitForSteeringTick(70);
+      continue;
+    }
     if (!current && baseline) return true;
     if (!options.ignoreExistingGeneration) {
       try {

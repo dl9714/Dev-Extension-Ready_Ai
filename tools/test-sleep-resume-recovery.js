@@ -48,9 +48,9 @@ assert.match(contentPart01, /handleReadyAiSystemResume\('content_timer_gap'\)/);
 assert.match(contentPart03, /for \(const delay of \[250, 1000, 3000\]\)/);
 assert.match(contentPart12, /handleReadyAiSystemResume\('network_online'\)/);
 
-const expectedBuild = '2026-08-20.3-platform-tabs';
+const expectedBuild = '2026-10-02.7-safe-session-recovery';
 assert.match(background, new RegExp(expectedBuild));
 assert.match(contentPart02, new RegExp(expectedBuild));
-assert.match(popup, /Ready_Ai 0\.3\.9 · 2026-08-20\.3/);
+assert.match(popup, /Ready_Ai 0\.3\.16/);
 
 console.log('Ready_Ai sleep resume recovery: alarm, timer drift, wake hooks, and version checks passed');

@@ -1,6 +1,7 @@
 function mountSteeringUi() {
   if (isReadyAiDuplicateContentInstance()) return;
   try { (document.body || document.documentElement).appendChild(steeringHost); } catch (_) {}
+  startSteeringOverlayWatch();
   restoreSteeringDraftToInput();
   applySteeringTheme();
   positionSteeringUi(true);
@@ -45,6 +46,10 @@ function applySteeringUiNow() {
   }
   const refs = ensureSteeringUi();
   if (!refs) return;
+  setSteeringDisabledIfChanged(refs.input, steeringStateRestoring || steeringSessionStorageFailed);
+  if (refs.queueWrap) refs.queueWrap.inert = steeringStateRestoring || steeringSessionStorageFailed;
+  if (refs.attachmentWrap) refs.attachmentWrap.inert = steeringStateRestoring || steeringSessionStorageFailed;
+  startSteeringOverlayWatch();
   const queueCountLabel = getSteeringQueueCountLabel();
   setSteeringTextIfChanged(refs.title, getSteeringStateLabel());
   setSteeringTextIfChanged(refs.meta, queueCountLabel);
@@ -75,11 +80,11 @@ function applySteeringUiNow() {
     refs.newChatCount.value = String(steeringNewChatTabCount);
   }
   setSteeringTextIfChanged(refs.primary, steeringAdvancedEnabled ? getSteeringPrimaryLabel() : '후속 대기');
-  setSteeringDisabledIfChanged(refs.primary, false);
+  setSteeringDisabledIfChanged(refs.primary, steeringStateRestoring);
   const hasDraftText = !!String(refs.input?.value || '').trim();
   const hasDraftImages = getSteeringDraftAttachmentCount() > 0;
   setSteeringDisabledIfChanged(refs.newChatSend, steeringNewChatSendPending || !steeringAdvancedEnabled || !hasDraftText || hasDraftImages);
-  setSteeringDisabledIfChanged(refs.sendNow, !hasDraftText && !hasDraftImages || steeringProcessing);
+  setSteeringDisabledIfChanged(refs.sendNow, !hasDraftText && !hasDraftImages || steeringProcessing || steeringStateRestoring);
   setSteeringDisabledIfChanged(refs.clear, !steeringQueue.length && !hasDraftText && !hasDraftImages);
   const canRunNext = canUserRunSteeringQueueNow();
   if (refs.runNext) {
@@ -104,8 +109,11 @@ function applySteeringUiNow() {
   syncTitleBadgeFromUiRender(false);
   setSteeringDisplayIfChanged(steeringHost, (steeringPanelOpen || steeringLauncherVisible) ? 'block' : 'none');
   fitOpenSteeringUiInsideViewport();
+  applySteeringOverlayYield();
 }
 function updateSteeringUi() {
+  syncSteeringConversationScope();
+  scheduleSteeringSessionSave();
   if (steeringUiRafId) return;
   const schedule = window.requestAnimationFrame || ((cb) => window.setTimeout(cb, 16));
   steeringUiRafId = schedule(() => {

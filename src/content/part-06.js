@@ -319,6 +319,8 @@ function shouldHoldSteeringQueueHeadForFirstChatGptTurn(options = {}) {
   });
 }
 function enqueueSteeringPrompt(text, options = {}) {
+  if (syncSteeringConversationScope()) return null;
+  if (steeringStateRestoring || steeringSessionStorageFailed) return null;
   const value = String(text || '').trim();
   const files = (Array.isArray(options.files) ? options.files : (Array.isArray(options.images) ? options.images : [])).filter((item) => item?.file);
   if (!value && !files.length) return null;
@@ -342,6 +344,7 @@ function enqueueSteeringPrompt(text, options = {}) {
 }
 function clearSteeringQueue(showStatus = true) {
   steeringQueue = [];
+  steeringRestoredQueuePaused = false;
   cancelSteeringQueueEdit({ silent: true });
   setSteeringDraftText('');
   clearSteeringDraftAttachments();

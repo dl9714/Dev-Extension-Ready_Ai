@@ -1,8 +1,8 @@
 <!DOCTYPE html>
-<html>
+<html lang="ko">
 <head>
   <meta charset="utf-8">
-  <title>Ready_Ai 0.3.9 · 2026-08-20.3</title>
+  <title>Ready_Ai 0.3.16</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     :root {
@@ -45,6 +45,15 @@
     }
     button, input, textarea, select { font: inherit; }
     button { -webkit-tap-highlight-color: transparent; }
+    .usage-control { margin: 0 0 10px; padding: 12px; border: 1px solid var(--border); border-radius: 16px; background: var(--card-solid); }
+    .usage-heading { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 13px; }
+    .usage-state { font-size: 11px; color: var(--success); font-weight: 750; }
+    .usage-control[data-enabled="false"] .usage-state { color: var(--muted); }
+    .usage-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    .usage-buttons button { padding: 10px 6px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-soft); color: var(--sub); font-weight: 750; cursor: pointer; }
+    .usage-buttons button[aria-pressed="true"] { color: #fff; border-color: var(--success); background: var(--success); }
+    .usage-buttons #ready-ai-use-off[aria-pressed="true"] { background: #475569; border-color: #475569; }
+    .usage-note { margin: 8px 0 0; font-size: 10px; line-height: 1.5; color: var(--muted); }
     .app {
       position: relative;
       width: 100%;
@@ -1417,6 +1426,7 @@
       }
     }
   </style>
+  <link rel="stylesheet" href="popup-board.css?v=0.3.16">
 </head>
 <body>
   <div class="app">
@@ -1424,64 +1434,52 @@
       <div class="header">
         <img src="../assets/bell_profile.png" alt="Ready_Ai logo">
         <div class="brand-copy">
-          <h2>Ready_Ai</h2>
+          <h2>Ready_AI</h2>
+          <div class="brand-caption">AI 작업을 한눈에.</div>
         </div>
         <div class="header-meta">
+          <span class="version-pill">v0.3.16</span>
           <span class="made-by-label">Made by 라쿤솜사탕</span>
-          <span class="version-pill">0.3.9 · 2026-08-20.3</span>
         </div>
       </div>
+      <section class="usage-control" id="ready-ai-usage" data-enabled="true" aria-label="Ready_AI 사용 전환">
+        <div class="usage-heading"><strong>사용 상태</strong><span class="usage-state" id="ready-ai-usage-state" aria-live="polite">불러오는 중</span></div>
+        <div class="usage-buttons">
+          <button type="button" id="ready-ai-use-on" aria-pressed="true">지금 사용하기</button>
+          <button type="button" id="ready-ai-use-off" aria-pressed="false">지금 사용 안 하기</button>
+        </div>
+        <p class="usage-note" id="ready-ai-usage-note">사용을 멈춰도 후속 대기 목록은 보관됩니다.</p>
+      </section>
       <div class="home-stack">
         <div class="hero-card">
           <div class="hero-top">
             <div>
-              <div class="hero-title">지금 상태</div>
-              <p class="hero-sub">추적 탭과 후속 대기 상태를 한눈에 확인</p>
+              <div class="hero-title">작업 현황</div>
+              <p class="hero-sub">숫자를 누르면 해당 탭을 확인할 수 있어요</p>
             </div>
             <span class="status-badge" id="main-status-badge">불러오는 중</span>
           </div>
           <div class="mini-stats">
-            <div class="mini-stat">
+            <button class="mini-stat" type="button" data-home-dashboard-filter="ALL" title="추적 중인 모든 탭 보기">
               <div class="mini-stat-main"><span class="mini-stat-icon tracked" aria-hidden="true"><img src="../assets/icons/status-tracked.svg" alt=""></span><div class="mini-stat-value" id="main-stat-tracked">0</div></div>
               <div class="mini-stat-label">추적</div>
-            </div>
-            <div class="mini-stat">
+            </button>
+            <button class="mini-stat" type="button" data-home-dashboard-filter="ORANGE" title="진행 중인 탭 보기">
               <div class="mini-stat-main"><span class="mini-stat-icon running" aria-hidden="true"><img src="../assets/icons/status-running.svg" alt=""></span><div class="mini-stat-value" id="main-stat-orange">0</div></div>
               <div class="mini-stat-label">진행중</div>
-            </div>
-            <div class="mini-stat">
+            </button>
+            <button class="mini-stat" type="button" data-home-dashboard-filter="GREEN" title="완료된 탭 보기">
               <div class="mini-stat-main"><span class="mini-stat-icon complete" aria-hidden="true"><img src="../assets/icons/status-complete.svg" alt=""></span><div class="mini-stat-value" id="main-stat-green">0</div></div>
               <div class="mini-stat-label">완료</div>
-            </div>
-            <div class="mini-stat">
+            </button>
+            <button class="mini-stat" type="button" data-home-dashboard-filter="QUEUED" title="후속 대기가 있는 탭 보기">
               <div class="mini-stat-main"><span class="mini-stat-icon queue" aria-hidden="true"><img src="../assets/icons/status-queue.svg" alt=""></span><div class="mini-stat-value" id="main-stat-queue">0</div></div>
               <div class="mini-stat-label">대기열</div>
-            </div>
+            </button>
           </div>
         </div>
 
-        <section class="verification-card" id="verification-card" aria-labelledby="verification-card-title">
-          <div class="verification-card-head">
-            <span class="verification-card-icon" aria-hidden="true"><img src="../assets/icons/status-complete.svg" alt=""></span>
-            <span class="verification-card-copy">
-              <strong id="verification-card-title">자동 안정화 검증 완료</strong>
-              <span id="verification-run-summary-home">앱 2026-08-20.3 · 플랫폼별 빠른 검증 통과</span>
-            </span>
-            <span class="verification-version-badge" id="verification-suite-version-home">검증팩 V1.6</span>
-          </div>
-          <div class="verification-progress-track" role="progressbar" aria-label="자동 검증 통과율" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100">
-            <div class="verification-progress-value" id="verification-progress-home" style="width: 100%;"></div>
-          </div>
-          <div class="verification-stats">
-            <span class="verification-stat"><strong id="verification-stat-gpt">8개</strong><span>GPT</span></span>
-            <span class="verification-stat"><strong id="verification-stat-gemini">6개</strong><span>Gemini</span></span>
-            <span class="verification-stat"><strong id="verification-stat-ais">5개</strong><span>AIS</span></span>
-          </div>
-          <button class="verification-open-button" type="button" data-open-sheet="verification-sheet">
-            <span>검증 버전과 세부 결과 보기</span>
-            <img src="../assets/icons/arrow-right.svg" alt="">
-          </button>
-        </section>
+
 
         <div class="simple-action-stack">
           <button class="simple-action" type="button" data-open-sheet="dashboard-sheet">
@@ -1498,13 +1496,16 @@
           <div class="favorites-empty hidden" id="favorites-empty">상세 설정에서 별표를 눌러 자주 쓰는 기능을 추가하세요.</div>
         </div>
 
+      </div>
+    </div>
+
+    <div class="board-footer">
         <button class="settings-row" type="button" data-open-sheet="settings-hub-sheet">
           <span class="settings-row-icon" aria-hidden="true"><img src="../assets/icons/settings.svg" alt=""></span>
           <span class="settings-row-title">상세 설정</span>
           <span class="settings-row-sub">알림 · 소리 · 사이트 · 템플릿</span>
           <span class="simple-chevron" aria-hidden="true"><img src="../assets/icons/arrow-right.svg" alt=""></span>
         </button>
-      </div>
     </div>
 
     <div class="sheet" id="verification-sheet">
@@ -1521,7 +1522,7 @@
             <span class="verification-detail-icon" aria-hidden="true"><img src="../assets/icons/status-complete.svg" alt=""></span>
             <span class="verification-detail-copy">
               <strong id="verification-status-detail">자동 검증 완료</strong>
-              <span id="verification-version-detail">검증팩 V1.6.0 · 앱 2026-08-20.3</span>
+              <span id="verification-version-detail">검증팩 V1.7.0 · 앱 2026-10-02.7</span>
             </span>
             <span class="verification-version-badge" id="verification-date-detail">08.19 완료</span>
           </div>
@@ -1575,6 +1576,31 @@
             <button class="favorite-toggle-button" type="button" data-favorite-id="advanced"><img src="../assets/icons/star.svg" alt=""></button>
           </div>
         </div>
+        <div class="settings-verification">
+        <section class="verification-card" id="verification-card" aria-labelledby="verification-card-title">
+          <div class="verification-card-head">
+            <span class="verification-card-icon" aria-hidden="true"><img src="../assets/icons/status-complete.svg" alt=""></span>
+            <span class="verification-card-copy">
+              <strong id="verification-card-title">자동 안정화 검증 완료</strong>
+              <span id="verification-run-summary-home">앱 2026-10-02.7 · 전체 검증 5회 통과</span>
+            </span>
+            <span class="verification-version-badge" id="verification-suite-version-home">검증팩 V1.6</span>
+          </div>
+          <div class="verification-progress-track" role="progressbar" aria-label="자동 검증 통과율" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100">
+            <div class="verification-progress-value" id="verification-progress-home" style="width: 100%;"></div>
+          </div>
+          <div class="verification-stats">
+            <span class="verification-stat"><strong id="verification-stat-gpt">8개</strong><span>GPT</span></span>
+            <span class="verification-stat"><strong id="verification-stat-gemini">6개</strong><span>Gemini</span></span>
+            <span class="verification-stat"><strong id="verification-stat-ais">5개</strong><span>AIS</span></span>
+          </div>
+          <button class="verification-open-button" type="button" data-open-sheet="verification-sheet">
+            <span>검증 버전과 세부 결과 보기</span>
+            <img src="../assets/icons/arrow-right.svg" alt="">
+          </button>
+        </section>
+        </div>
+
         <div class="settings-quick-favorite">
           <span class="settings-quick-favorite-icon" aria-hidden="true"><img src="../assets/icons/shield-off.svg" alt=""></span>
           <span class="settings-quick-favorite-copy"><strong>방해 금지 즐겨찾기</strong><span>첫 화면에서 바로 켜고 끄기</span></span>
@@ -2120,6 +2146,6 @@
     <div class="footer-hint" id="status-hint"></div>
   </div>
   <script src="sites.js"></script>
-  <script src="popup.js?v=2026-08-20.3"></script>
+  <script src="popup.js?v=0.3.16"></script>
 </body>
 </html>

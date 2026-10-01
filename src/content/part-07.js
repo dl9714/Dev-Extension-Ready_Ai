@@ -365,6 +365,10 @@ async function sendChatGptImmediateViaStableControls(composer, text, timeoutMs =
   };
 }
 async function sendSteeringPromptText(text, options = {}) {
+  const sessionToken = steeringConversationSessionToken;
+  const instanceSeq = getReadyAiContentInstanceSeq();
+  if (!monitoring || !readyAiEnabled) return { ok: false, sent: false, message: 'Ready_AI 사용을 멈췄습니다. 대기는 유지합니다.' };
+  steeringChatGptSubmissionUncertain = false;
   const composer = getActiveComposer();
   if (!composer) {
     return { ok: false, sent: false, retryable: true, message: '입력창이 아직 준비되지 않았습니다.' };
@@ -388,6 +392,7 @@ async function sendSteeringPromptText(text, options = {}) {
     }
     setSteeringStatus(text ? '파일 업로드 완료 · 문구 전송 중' : '파일 업로드 완료 · 전송 중');
   }
+  if (!monitoring || !readyAiEnabled || sessionToken !== steeringConversationSessionToken || !isReadyAiCurrentContentInstance(instanceSeq)) return { ok: false, sent: false, message: '대화 또는 사용 상태가 변경되어 대기를 유지합니다.' };
   suppressComposerAcknowledge(1700);
   const existingText = options.replaceComposerText ? '' : getCurrentComposerText(composer);
   const mergedText = mergeSteeringText(existingText, text);
@@ -471,6 +476,7 @@ async function sendSteeringPromptText(text, options = {}) {
   ];
   const attempts = options.preferKeyboardShortcut ? shortcutFirstAttempts : buttonFirstAttempts;
   for (const attempt of attempts) {
+    if (!monitoring || !readyAiEnabled || sessionToken !== steeringConversationSessionToken || !isReadyAiCurrentContentInstance(instanceSeq)) return { ok: false, sent: false, message: '대화 또는 사용 상태가 변경되어 대기를 유지합니다.' };
     if (mergedText) {
       const currentText = String(getCurrentComposerText(composer) || '').trim();
       if (currentText !== String(mergedText || '').trim()) {
@@ -485,10 +491,16 @@ async function sendSteeringPromptText(text, options = {}) {
     if (sent) {
       return { ok: true, sent: true, message: '전송했습니다.' };
     }
+    if (steeringChatGptSubmissionUncertain) {
+      return { ok: false, sent: false, uncertain: true, message: '전송 확인이 지연되어 대기를 보존했습니다. 대화에서 전송 여부를 확인해 주세요.' };
+    }
   }
   return { ok: false, sent: false, message: '전송 경로를 모두 시도했지만 전송하지 못했습니다.' };
 }
 async function sendSteeringItemImmediately(item, options = {}) {
+  const sessionToken = steeringConversationSessionToken;
+  const instanceSeq = getReadyAiContentInstanceSeq();
+  if (steeringStateRestoring || steeringSessionStorageFailed) return false;
   if (!monitoring || !steeringEnabled) {
     setSteeringStatus('후속 지시 기능이 꺼져 있습니다.', true);
     return false;
@@ -500,6 +512,7 @@ async function sendSteeringItemImmediately(item, options = {}) {
     while (steeringProcessing && Date.now() <= processingDeadline) {
       await waitForSteeringTick(70);
     }
+    if (sessionToken !== steeringConversationSessionToken || !isReadyAiCurrentContentInstance(instanceSeq)) return false;
     if (steeringProcessing) {
       setSteeringStatus('앞선 전송이 아직 끝나지 않아 Ctrl+Enter 지시를 입력창에 보존했습니다.', true);
       return false;
@@ -532,8 +545,7 @@ async function sendSteeringItemImmediately(item, options = {}) {
   setSteeringStatus(generatingNow ? '현재 작업에 바로 반영 중...' : '바로 전송 중...');
   updateSteeringUi();
   try {
-    if (generatingNow) clearSteeringChatGptAssistantObservation();
-    else captureSteeringChatGptAssistantBaseline();
+    if (!generatingNow || !steeringChatGptAssistantBaseline) captureSteeringChatGptAssistantBaseline();
     const result = await sendSteeringPromptText(text, {
       files,
       ignoreExistingGeneration: generatingNow,
@@ -554,7 +566,9 @@ async function sendSteeringItemImmediately(item, options = {}) {
       nativeImmediateTimeoutMs: 5200,
       submitStartTimeoutMs: Math.max(700, Number(options.submitStartTimeoutMs) || (generatingNow ? 4200 : 3500)),
     });
+    if (sessionToken !== steeringConversationSessionToken || !isReadyAiCurrentContentInstance(instanceSeq)) return false;
     if (!result?.ok || !result?.sent) {
+      if (result?.uncertain) steeringRestoredQueuePaused = true;
       if (!generatingNow) clearSteeringChatGptAssistantObservation();
       setSteeringStatus(result?.message || '바로 반영하지 못했습니다.', true);
       updateSteeringUi();
@@ -592,8 +606,10 @@ async function sendSteeringItemImmediately(item, options = {}) {
     return true;
   } finally {
     releaseSteeringQueueDispatchLock(dispatchToken);
-    steeringProcessing = false;
-    updateSteeringUi();
+    if (sessionToken === steeringConversationSessionToken && isReadyAiCurrentContentInstance(instanceSeq)) {
+      steeringProcessing = false;
+      updateSteeringUi();
+    }
   }
 }
 async function sendSteeringDraftImmediately() {
@@ -714,7 +730,10 @@ async function sendSteeringPromptTextWhenReady(text, options = {}) {
   };
 }
 async function processSteeringQueue(options = {}) {
+  const sessionToken = steeringConversationSessionToken;
+  const instanceSeq = getReadyAiContentInstanceSeq();
   if (!monitoring || !steeringEnabled) return false;
+  if (steeringStateRestoring || steeringSessionStorageFailed) return false;
   if (!steeringQueue.length) return false;
   if (steeringProcessing) return false;
   const allowHeldFirstTurn = options.source === 'resume_button';
@@ -738,9 +757,12 @@ async function processSteeringQueue(options = {}) {
   steeringProcessing = true;
   updateSteeringUi();
   try {
+    if (!await persistSteeringSessionState() || !monitoring || !readyAiEnabled || sessionToken !== steeringConversationSessionToken || !isReadyAiCurrentContentInstance(instanceSeq)) return false;
     captureSteeringChatGptAssistantBaseline();
     const result = await sendSteeringPromptText(current.text, { files: getSteeringQueueAttachments(current) });
+    if (sessionToken !== steeringConversationSessionToken || !isReadyAiCurrentContentInstance(instanceSeq)) return false;
     if (!result.ok || !result.sent) {
+      if (result.uncertain) steeringRestoredQueuePaused = true;
       clearSteeringChatGptAssistantObservation();
       if (result.retryable) {
         current.retryCount = Math.max(0, Number(current.retryCount) || 0) + 1;
@@ -756,7 +778,7 @@ async function processSteeringQueue(options = {}) {
       updateSteeringUi();
       return false;
     }
-    steeringQueue = steeringQueue.slice(1);
+    steeringQueue = steeringQueue.filter((item) => item.id !== current.id);
     syncSteeringQueueEditState();
     clearSteeringCompletionOffer();
     steeringAwaitingTurnCompletion = true;
@@ -766,19 +788,20 @@ async function processSteeringQueue(options = {}) {
     armSteeringSendLock();
     if (isChatGptSafeMode()) setChatGptLightGenerating(true, { observed: false });
     setSteeringStatus(options.source === 'auto' ? '자동 전송했습니다.' : '전송했습니다.');
-    setSteeringDraftText('');
-    try { if (steeringRefs?.input) steeringRefs.input.value = ''; } catch (_) {}
     if (steeringCloseAfterSend) steeringPanelOpen = false;
     updateSteeringUi();
     return true;
   } finally {
     releaseSteeringQueueDispatchLock(dispatchToken);
-    steeringProcessing = false;
-    updateSteeringUi();
+    if (sessionToken === steeringConversationSessionToken && isReadyAiCurrentContentInstance(instanceSeq)) {
+      steeringProcessing = false;
+      updateSteeringUi();
+    }
   }
 }
 async function resumeSteeringQueueNow(options = {}) {
   if (!monitoring || !steeringEnabled) return false;
+  if (steeringStateRestoring || steeringSessionStorageFailed) return false;
   const forceResume = !!options.force || options.source === 'resume_button';
   if (!steeringQueue.length) {
     setSteeringStatus('전송할 대기열이 없습니다.', true);
@@ -820,6 +843,7 @@ async function resumeSteeringQueueNow(options = {}) {
   clearSteeringAwaitingResponseStart();
   clearSteeringTurnCompletionWait();
   isGenerating = false;
+  steeringRestoredQueuePaused = false;
   if (completionStatus === 'completed') completionStatus = 'idle';
   setSteeringStatus(options.source === 'resume_button' ? '즉시 재개합니다.' : '대기열 전송을 재개합니다.');
   updateTitleBadge();
@@ -954,5 +978,5 @@ function submitSteeringInput() {
   scheduleSteeringQueueProcessing(0);
 }
 ['pointerdown', 'pointerup', 'mousedown', 'mouseup', 'click'].forEach((type) => {
-  try { document.addEventListener(type, suppressFollowupPointerAfterSteeringDrop, true); } catch (_) {}
+  try { addReadyAiEventListener(document, type, suppressFollowupPointerAfterSteeringDrop, true); } catch (_) {}
 });

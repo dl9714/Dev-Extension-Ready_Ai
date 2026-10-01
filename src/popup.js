@@ -1,11 +1,17 @@
 function $(id) {
   return document.getElementById(id);
 }
+let hintClearTimer = null;
 function setHint(text, isError = false) {
   const el = $('status-hint');
   if (!el) return;
   el.textContent = text || '';
-  el.style.color = isError ? '#c83d3d' : '#8a91a1';
+  el.style.color = isError ? 'var(--danger)' : 'var(--sub)';
+  if (hintClearTimer) clearTimeout(hintClearTimer);
+  hintClearTimer = text && !isError ? setTimeout(() => {
+    el.textContent = '';
+    hintClearTimer = null;
+  }, 3000) : null;
 }
 function getSitesApi() {
   return window?.ReadyAi?.sites;
@@ -355,7 +361,7 @@ function renderVerificationCenter(data) {
   const card = $('verification-card');
   if (card) card.dataset.status = model.automatedPassed ? 'passed' : 'attention';
   setVerificationText('verification-card-title', model.automatedPassed ? '자동 안정화 검증 완료' : '자동 검증 확인 필요');
-  setVerificationText('verification-run-summary-home', `앱 ${model.appVersion} · 플랫폼별 빠른 검증 통과`);
+  setVerificationText('verification-run-summary-home', `앱 ${model.appVersion} · 자동 검증 ${model.repeatRounds}회`);
   setVerificationText('verification-suite-version-home', `검증팩 V${model.suiteVersion.replace(/\.0$/, '')}`);
   setVerificationText('verification-stat-gpt', `${model.platforms.find((platform) => platform.id === 'chatgpt')?.groups.length || 0}개`);
   setVerificationText('verification-stat-gemini', `${model.platforms.find((platform) => platform.id === 'gemini')?.groups.length || 0}개`);
@@ -692,9 +698,9 @@ function setToneClass(id, baseClass, tone) {
   if (tone) el.classList.add(`is-${tone}`);
   if (baseClass && !el.classList.contains(baseClass)) el.classList.add(baseClass);
 }
-function setMainStatusTone({ dndMode, snoozed, quiet, greenCount, orangeCount }) {
+function setMainStatusTone({ readyAiEnabled = true, dndMode, snoozed, quiet, greenCount, orangeCount }) {
   let tone = 'idle';
-  if (dndMode || snoozed || quiet) tone = 'muted';
+  if (!readyAiEnabled || dndMode || snoozed || quiet) tone = 'muted';
   else if (greenCount > 0) tone = 'done';
   else if (orangeCount > 0) tone = 'running';
   setToneClass('main-status-badge', 'status-badge', tone);
@@ -768,6 +774,7 @@ function renderFavorites(cfg) {
   });
   if (renderSignature === lastFavoritesRenderSignature) return;
   lastFavoritesRenderSignature = renderSignature;
+  const focusedId = container.contains(document.activeElement) ? document.activeElement.id : '';
   container.innerHTML = '';
   if (count) count.textContent = `${favorites.length}개`;
   if (empty) empty.classList.toggle('hidden', favorites.length > 0);
@@ -825,6 +832,7 @@ function renderFavorites(cfg) {
     }
     container.appendChild(row);
   });
+  if (focusedId) $(focusedId)?.focus({ preventScroll: true });
 }
 function renderFavoriteButtons(cfg) {
   const favorites = new Set(normalizePopupFavorites(cfg.popupFavorites));
@@ -860,6 +868,7 @@ function getSitesStorageKeys() {
 function buildConfigStoragePayload(cfg) {
   const { enabledKey, customKey } = getSitesStorageKeys();
   return {
+    readyAiEnabled: cfg.readyAiEnabled !== false,
     dndMode: !!cfg.dndMode,
     badgeEnabled: false,
     badgeCountEnabled: false,
@@ -975,6 +984,7 @@ function loadConfig(cb) {
   const sitesApi = getSitesApi();
   const { enabledKey, customKey } = getSitesStorageKeys();
   chrome.storage.local.get([
+    'readyAiEnabled',
     'dndMode',
     'badgeEnabled',
     'badgeCountEnabled',
@@ -1022,6 +1032,7 @@ function loadConfig(cb) {
       ? sitesApi.normalizeCustomSites(res?.[customKey])
       : (res?.[customKey] || []);
     cb({
+      readyAiEnabled: res.readyAiEnabled !== false,
       dndMode: !!res.dndMode,
       badgeEnabled: false,
       badgeCountEnabled: false,
@@ -1677,6 +1688,7 @@ async function sendSteeringToItems(items, text, label) {
   return { ok: successCount > 0, successCount, failCount };
 }
 function refreshSummary(cfg) {
+  renderReadyAiUsageControl(cfg);
   const sitesApi = getSitesApi();
   const builtinSites = Array.isArray(sitesApi?.BUILTIN_SITES) ? sitesApi.BUILTIN_SITES : [];
   const builtinEnabledCount = builtinSites.filter((s) => !!cfg.enabledSites?.[s.key]).length;
@@ -1690,7 +1702,7 @@ function refreshSummary(cfg) {
   const alertEnabled = cfg.individualCompletionNotificationEnabled || cfg.batchCompletionNotificationEnabled;
   const snoozed = runtimeSnapshot.snoozeUntil > Date.now();
   const quiet = isQuietHoursActiveLocal(cfg);
-  const mainStatus = cfg.dndMode
+  const mainStatus = cfg.readyAiEnabled === false ? '사용 안 함' : cfg.dndMode
     ? '방해 금지'
     : (snoozed ? '스누즈 중' : (quiet ? '조용한 시간' : (greenCount > 0 ? '완료 감지' : (orangeCount > 0 ? '감시 중' : '대기 중'))));
   updateSummaryText('main-status-badge', mainStatus);
@@ -1702,7 +1714,7 @@ function refreshSummary(cfg) {
   updateSummaryText('main-chip-site', `사이트 ${builtinEnabledCount + customEnabledCount}`);
   updateSummaryText('main-chip-template', `템플릿 ${templateCount}`);
   updateSummaryText('main-chip-quiet', snoozed ? '스누즈 적용' : (cfg.quietHoursEnabled ? getQuietHoursLabel(cfg) : '조용한 시간 꺼짐'));
-  setMainStatusTone({ dndMode: !!cfg.dndMode, snoozed, quiet, greenCount, orangeCount });
+  setMainStatusTone({ readyAiEnabled: cfg.readyAiEnabled !== false, dndMode: !!cfg.dndMode, snoozed, quiet, greenCount, orangeCount });
   setToneClass('main-chip-alert', 'quick-chip', (!alertEnabled || cfg.dndMode || snoozed || quiet) ? 'muted' : 'positive');
   setToneClass('main-chip-site', 'quick-chip', (builtinEnabledCount + customEnabledCount) > 0 ? 'info' : 'muted');
   setToneClass('main-chip-template', 'quick-chip', templateCount > 0 ? 'info' : 'muted');
@@ -2479,7 +2491,46 @@ function setSnoozeUntil(ts, cfg) {
     setHint(ts > Date.now() ? '알림 잠시 끄기 적용됨' : '알림 잠시 끄기 해제됨');
   });
 }
+function renderReadyAiUsageControl(cfg) {
+  const enabled = cfg.readyAiEnabled !== false;
+  const control = $('ready-ai-usage');
+  if (control) control.dataset.enabled = String(enabled);
+  $('ready-ai-use-on')?.setAttribute('aria-pressed', String(enabled));
+  $('ready-ai-use-off')?.setAttribute('aria-pressed', String(!enabled));
+  if ($('ready-ai-usage-state')) $('ready-ai-usage-state').textContent = enabled ? '사용 중' : '사용 안 함';
+  if ($('ready-ai-usage-note')) $('ready-ai-usage-note').textContent = enabled
+    ? '후속 지시와 완료 알림을 사용합니다.'
+    : '후속 대기는 보관합니다. 화면 버튼·자동 전송·알림은 멈춥니다.';
+}
+function setReadyAiUsageEnabled(cfg, enabled) {
+  const previous = cfg.readyAiEnabled !== false;
+  cfg.readyAiEnabled = !!enabled;
+  renderReadyAiUsageControl(cfg);
+  chrome.storage.local.set({ readyAiEnabled: cfg.readyAiEnabled }, () => {
+    if (chrome.runtime.lastError) {
+      cfg.readyAiEnabled = previous;
+      renderReadyAiUsageControl(cfg);
+      setHint('사용 상태를 변경하지 못했습니다.', true);
+      return;
+    }
+    refreshSummary(cfg);
+    setHint(enabled ? 'Ready_AI를 켰습니다. 보관된 대기는 확인 후 재개할 수 있습니다.' : 'Ready_AI를 껐습니다. 후속 대기는 보관됩니다.');
+    if (enabled) ensureActiveTabContent('usage_enabled').catch(() => {});
+  });
+}
 function wireActions(cfg) {
+  $('ready-ai-use-on')?.addEventListener('click', () => setReadyAiUsageEnabled(cfg, true));
+  $('ready-ai-use-off')?.addEventListener('click', () => setReadyAiUsageEnabled(cfg, false));
+  document.querySelectorAll('[data-home-dashboard-filter]').forEach((button) => {
+    button.addEventListener('click', () => {
+      dashboardView.filter = button.dataset.homeDashboardFilter;
+      dashboardView.search = '';
+      if ($('dashboard-search')) $('dashboard-search').value = '';
+      invalidateFilteredDashboardCache();
+      openSheet('dashboard-sheet');
+      refreshRuntimeDashboard(cfg, true, { force: true }).catch(() => {});
+    });
+  });
   document.querySelectorAll('[data-favorite-id]').forEach((button) => {
     button.addEventListener('click', () => {
       togglePopupFavorite(String(button.getAttribute('data-favorite-id') || ''), cfg);

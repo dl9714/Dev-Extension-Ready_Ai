@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Ready_Ai",
-  "version": "0.3.9",
+  "version": "0.3.16",
   "description": "AI 답변 완료 알림, 탭 이름 관리, 후속 지시 성능 업그레이드",
   "background": {
     "service_worker": "src/background.js"
@@ -15,7 +15,7 @@
       "js": [
         "src/content/chatgpt-bootstrap.js"
       ],
-      "run_at": "document_idle",
+      "run_at": "document_end",
       "all_frames": false
     },
     {

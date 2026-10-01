@@ -1,6 +1,31 @@
 // NOTE:
 // - content script는 <all_urls>에 주입된다.
 // - 하지만 실제 감시는 "등록/활성"된 사이트에서만 실행한다.
+// Capture the old isolated-world state before any globals are reset by reinjection.
+try {
+  if (globalThis.__ReadyAiCaptureSession) globalThis.__ReadyAiRecoveredSession = globalThis.__ReadyAiCaptureSession();
+  else if (typeof steeringQueue !== 'undefined' && Array.isArray(steeringQueue)) {
+    globalThis.__ReadyAiRecoveredSession = {
+      queue: steeringQueue, queueSeq: steeringQueueSeq, draft: steeringRefs?.input?.value ?? steeringDraftText,
+      attachments: steeringAttachments, attachmentSeq: steeringAttachmentSeq, panelOpen: steeringPanelOpen,
+      siteKey: steeringSessionSiteKey, paused: !!steeringProcessing, awaiting: steeringAwaitingTurnCompletion,
+      observed: steeringObservedGenerationSinceSend, baseline: steeringChatGptAssistantBaseline,
+      observedAt: steeringChatGptAssistantObservedAt, finalizedAt: steeringChatGptAssistantFinalizedAt,
+      generating: isGenerating, startedAt: chatGptLightGenerationStartedAt, watchUntil: chatGptLightGenerationWatchUntil,
+      editingId: steeringQueueEditingId, editingText: steeringQueueEditingText,
+    };
+    if (typeof stopMonitoring === 'function') stopMonitoring();
+  } else globalThis.__ReadyAiRecoveredSession = null;
+} catch (_) {}
+try {
+  for (const cleanup of globalThis.__ReadyAiEventCleanups || []) cleanup();
+  globalThis.__ReadyAiEventCleanups = [];
+  if (globalThis.__ReadyAiStorageListener) chrome.storage.onChanged.removeListener(globalThis.__ReadyAiStorageListener);
+} catch (_) {}
+function addReadyAiEventListener(target, type, handler, options) {
+  target.addEventListener(type, handler, options);
+  (globalThis.__ReadyAiEventCleanups || (globalThis.__ReadyAiEventCleanups = [])).push(() => target.removeEventListener(type, handler, options));
+}
 var activeSite = null; // { key, name, detection }
 var monitoring = false;
 var isGenerating = false;
