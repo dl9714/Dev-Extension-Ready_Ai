@@ -1,9 +1,9 @@
 // sites registry (builtin/custom)
 try {
-  // background(service_worker)는 extension root 기준 경로가 안전함
-  importScripts('src/sites.js');
-} catch (_) {
-  // ignore
+  // importScripts resolves against this worker's src/background.js URL.
+  importScripts('sites.js', 'steering-session-store.js');
+} catch (error) {
+  console.error('[Ready_Ai] background dependencies failed to load', error);
 }
 // tabStates 구조(확장됨):
 // {
@@ -26,6 +26,7 @@ let tabStates = {};
 let frameStates = {}; // { tabId: { frameId: { isGenerating, platform, siteName, ts } } }
 // ===== Settings (storage.local) =====
 const STORAGE_KEYS = {
+  READY_AI_ENABLED: 'readyAiEnabled',
   DND_MODE: 'dndMode',
   BADGE_ENABLED: 'badgeEnabled',
   BADGE_COUNT_ENABLED: 'badgeCountEnabled',
@@ -58,8 +59,12 @@ const STORAGE_KEYS = {
 };
 const GEMINI_PROBE_ALARM = 'ready_ai_gemini_probe';
 const STEERING_QUEUE_PROBE_ALARM = 'ready_ai_steering_queue_probe';
+const SYSTEM_RESUME_ALARM = 'ready_ai_system_resume_watchdog';
 const GEMINI_PROBE_MIN_PERIOD_MIN = 1; // chrome.alarms 최소 1분
 const STEERING_QUEUE_PROBE_MIN_PERIOD_MIN = 1;
+const SYSTEM_RESUME_ALARM_PERIOD_MIN = 1;
+const SYSTEM_RESUME_ALARM_OVERDUE_MS = 20_000;
+const SYSTEM_RESUME_RECOVERY_COOLDOWN_MS = 8_000;
 const STEERING_QUEUE_PROBE_MAX_TABS_PER_TICK = 3;
 const GEMINI_PROBE_NUDGE_COOLDOWN_MS = 30_000; // 너무 자주 탭 전환하면 거슬림
 const CHATGPT_NEW_CHAT_TAB_GAP_MS = 7_000;
@@ -67,7 +72,8 @@ const CHATGPT_NEW_CHAT_PREOPEN_GAP_MS = 450;
 const CHATGPT_RATE_LIMIT_COOLDOWN_MS = 5 * 60_000;
 const CHATGPT_NEW_CHAT_MAX_TABS = 8;
 const READY_AI_CONTENT_VERSION = '2026-06-12.21-single-queue-dispatch';
-const READY_AI_CONTENT_BUILD_VERSION = '2026-08-10.2-gemini-quill-replace';
+const READY_AI_CONTENT_BUILD_VERSION = '2026-10-02.7-safe-session-recovery';
+const contentEnsureInFlight = new Map();
 const READY_AI_CANONICAL_EXTENSION_ID = 'jmgnmeaiahlpbbgnocmognokfecofkma';
 const READY_AI_LEGACY_MIRROR_EXTENSION_ID = 'ajnolilmicdilijebljgchoodgajnfeg';
 const OFFSCREEN_DOCUMENT_PATH = 'src/offscreen.html';
@@ -104,7 +110,10 @@ function isManifestManagedContentUrl(url) {
   }
 }
 function shouldRecoverManifestManagedContent(tab, response, options = {}) {
-  if (response?.ok) return false;
+  // A listener from an older extension build can still answer ping even though its
+  // timers/UI are stale after an extension reload or system resume. The caller has
+  // already ruled out the current build before enabling version-mismatch recovery.
+  if (response?.ok && options.recoverVersionMismatch !== true) return false;
   if (options.forceInject === true) return true;
   return String(tab?.status || '').toLowerCase() === 'complete';
 }
@@ -129,6 +138,7 @@ const SOUND_PRESETS = Object.freeze({
   custom: 'custom',
 });
 const DEFAULT_SETTINGS = Object.freeze({
+  readyAiEnabled: true,
   dndMode: false,
   badgeEnabled: false,
   badgeCountEnabled: false,
@@ -171,6 +181,8 @@ let tabMetaCache = {}; // { [tabId]: { id, title, url, active, discarded, window
 let tabCacheInitialized = false;
 let actionStateCache = {}; // { [tabId]: signature }
 let titleRecoveryAttemptAt = {}; // { [tabId]: timestamp }
+let systemResumeRecoveryPromise = null;
+let systemResumeRecoveryAt = 0;
 let dashboardVersion = 1;
 let customTabTitles = {};
 let customTabTitlesFlushTimer = null;
@@ -392,6 +404,7 @@ function isQuietHoursActive(ts = Date.now()) {
   return nowMinutes >= start || nowMinutes < end;
 }
 function getNotificationSuppressionReason() {
+  if (settings.readyAiEnabled === false) return 'paused';
   if (settings.dndMode) return 'dnd';
   if (isNotificationSnoozed()) return 'snooze';
   if (isQuietHoursActive()) return 'quiet_hours';
@@ -590,14 +603,17 @@ function getDashboardItemsFromCache() {
   dashboardItemsCacheVersion = dashboardVersion;
   return dashboardItemsCache.slice();
 }
-function pScriptingExecOnce(tabId, files, allFrames = false) {
+function pScriptingExecOnce(tabId, files, allFrames = false, options = {}) {
   return new Promise((resolve) => {
     try {
       if (!chrome.scripting?.executeScript) return resolve(false);
       chrome.scripting.executeScript(
         {
-          target: { tabId, allFrames: !!allFrames },
+          target: options.documentId
+            ? { tabId, documentIds: [options.documentId] }
+            : { tabId, allFrames: !!allFrames },
           files: Array.isArray(files) ? files : [files],
+          ...(options.injectImmediately ? { injectImmediately: true } : {}),
         },
         () => {
           if (chrome.runtime.lastError) return resolve(false);
@@ -609,16 +625,16 @@ function pScriptingExecOnce(tabId, files, allFrames = false) {
     }
   });
 }
-async function pScriptingExec(tabId, files, allFrames = false) {
+async function pScriptingExec(tabId, files, allFrames = false, options = {}) {
   const fileList = (Array.isArray(files) ? files : [files]).filter(Boolean);
   if (!fileList.length) return false;
-  if (await pScriptingExecOnce(tabId, fileList, allFrames)) return true;
+  if (await pScriptingExecOnce(tabId, fileList, allFrames, options)) return true;
   if (fileList.length === 1) return false;
   // 일부 Chrome 환경에서 여러 확장 파일을 한 번에 가져올 때
   // "An unknown error occurred when fetching the script"가 발생한다.
   // 실행 순서를 유지한 채 파일별 주입으로 복구한다.
   for (const file of fileList) {
-    if (!(await pScriptingExecOnce(tabId, [file], allFrames))) return false;
+    if (!(await pScriptingExecOnce(tabId, [file], allFrames, options))) return false;
   }
   return true;
 }
@@ -1291,6 +1307,29 @@ function getSoundOptionsByKind(kind) {
   };
 }
 async function ensureContentScripts(tab, options = {}) {
+  if (!isChatGptUrl(tab?.url || '')) return ensureContentScriptsNow(tab, options);
+  // Navigation and the bootstrap may request the same document concurrently.
+  // Do not reset the content globals/listeners by injecting it twice.
+  const key = `${tab.id}|${options.documentId || tab.url}|${!!options.forceInject}`;
+  const existing = contentEnsureInFlight.get(key);
+  if (existing) return existing;
+  const pending = ensureContentScriptsNow(tab, options);
+  contentEnsureInFlight.set(key, pending);
+  try {
+    return await pending;
+  } finally {
+    if (contentEnsureInFlight.get(key) === pending) contentEnsureInFlight.delete(key);
+  }
+}
+function isReadyAiContentBuildCurrentOrNewer(build, expected = READY_AI_CONTENT_BUILD_VERSION) {
+  if (build === expected) return true;
+  const parse = (value) => String(value || '').match(/^(\d{4}-\d{2}-\d{2})\.(\d+)(?:-|$)/);
+  const actual = parse(build);
+  const wanted = parse(expected);
+  if (!actual || !wanted) return false;
+  return actual[1] > wanted[1] || (actual[1] === wanted[1] && Number(actual[2]) >= Number(wanted[2]));
+}
+async function ensureContentScriptsNow(tab, options = {}) {
   if (isReadyAiPassiveDuplicateBackground()) return false;
   // 세션 복원/탭 discard 타이밍에 따라 content script가 아직 주입되지 않은 탭이 생긴다.
   // 이 경우 title 뱃지(이모지)와 status_update가 올라오지 않아서 “뱃지 사라짐”처럼 보인다.
@@ -1301,7 +1340,9 @@ async function ensureContentScripts(tab, options = {}) {
   const site = resolveSiteForUrl(url);
   if (!site) return false; // 등록/활성된 사이트만
   const chatGptTopFrameOnly = site?.key === 'chatgpt' || isChatGptUrl(url);
-  const messageOptions = (options.frameId === 0 || chatGptTopFrameOnly) ? { frameId: 0 } : null;
+  const messageOptions = (options.frameId === 0 || chatGptTopFrameOnly)
+    ? { frameId: 0, ...(options.documentId ? { documentId: options.documentId } : {}) }
+    : null;
   const topFrameOnly = !!options.topFrameOnly || chatGptTopFrameOnly;
   // Gemini/AI Studio도 작성기와 상태 UI가 최상위 문서에 있다.
   // 기본 allFrames 주입은 접근 불가한 내부 iframe에서 일부 파일만 실행된 뒤
@@ -1312,7 +1353,7 @@ async function ensureContentScripts(tab, options = {}) {
   const isCurrentBuild = (response) => !!(
     response?.ok
     && response.readyAiContentVersion === READY_AI_CONTENT_VERSION
-    && response.readyAiContentBuildVersion === READY_AI_CONTENT_BUILD_VERSION
+    && isReadyAiContentBuildCurrentOrNewer(response.readyAiContentBuildVersion)
   );
   if (isCurrentBuild(alive) && !options.forceInject) {
     if (site?.key !== 'chatgpt' && site?.key !== 'gemini' && site?.key !== 'aistudio') await ensureMainWorldTitleGuard(tabId);
@@ -1333,11 +1374,14 @@ async function ensureContentScripts(tab, options = {}) {
         return true;
       }
     }
-    if (!shouldRecoverManifestManagedContent(tab, alive, options)) return false;
+    if (!shouldRecoverManifestManagedContent(tab, alive, { ...options, recoverVersionMismatch: true })) return false;
   }
   // 2) 없으면 강제 주입(필요 권한: "scripting")
-  let injected = await pScriptingExec(tabId, CONTENT_SCRIPT_FILES, injectAllFrames);
-  if (!injected && injectAllFrames) injected = await pScriptingExec(tabId, CONTENT_SCRIPT_FILES, false);
+  const injectionOptions = chatGptTopFrameOnly
+    ? { injectImmediately: true, documentId: options.documentId }
+    : {};
+  let injected = await pScriptingExec(tabId, CONTENT_SCRIPT_FILES, injectAllFrames, injectionOptions);
+  if (!injected && injectAllFrames) injected = await pScriptingExec(tabId, CONTENT_SCRIPT_FILES, false, injectionOptions);
   if (!injected) return false;
   if (site?.key !== 'chatgpt' && site?.key !== 'gemini' && site?.key !== 'aistudio') await ensureMainWorldTitleGuard(tabId);
   // 3) 주입 직후 즉시 체크 요청
@@ -1402,7 +1446,7 @@ function shouldEnsureContentForTabEvent(tab) {
   if (isChatGptUrl(tab.url || '')) return true;
   return isMonitoredUrl(tab.url || '');
 }
-function ensureChatGptContentForNavigation(tabId, url, reason = 'chatgpt_navigation') {
+function ensureChatGptContentForNavigation(tabId, url, reason = 'chatgpt_navigation', documentId = '') {
   if (isReadyAiPassiveDuplicateBackground()) return;
   if (typeof tabId !== 'number' || !isChatGptUrl(url || '')) return;
   safeActionCall((async () => {
@@ -1413,7 +1457,7 @@ function ensureChatGptContentForNavigation(tabId, url, reason = 'chatgpt_navigat
       url: url || tab?.url || '',
     };
     if (!candidate.url || candidate.discarded || !isChatGptUrl(candidate.url)) return;
-    const ready = await ensureContentScripts(candidate, { allFrames: false, topFrameOnly: true, frameId: 0 });
+    const ready = await ensureContentScripts(candidate, { allFrames: false, topFrameOnly: true, frameId: 0, documentId });
     if (!ready) return;
     await pTabsSendMessage(tabId, { action: 'force_check', reason, topFrameOnly: true }, { frameId: 0 });
   })());
@@ -2278,8 +2322,23 @@ function ensureGeminiProbeAlarm() {
     chrome.alarms.create(GEMINI_PROBE_ALARM, { periodInMinutes: periodMin });
   } catch (_) {}
 }
+function isSystemResumeAlarmOverdue(alarm, now = Date.now()) {
+  const scheduledTime = Number(alarm?.scheduledTime);
+  if (!Number.isFinite(scheduledTime) || scheduledTime <= 0) return false;
+  return Number(now) - scheduledTime >= SYSTEM_RESUME_ALARM_OVERDUE_MS;
+}
+function ensureSystemResumeAlarm() {
+  if (isReadyAiPassiveDuplicateBackground()) {
+    try { chrome.alarms.clear(SYSTEM_RESUME_ALARM); } catch (_) {}
+    return;
+  }
+  try {
+    chrome.alarms.create(SYSTEM_RESUME_ALARM, { periodInMinutes: SYSTEM_RESUME_ALARM_PERIOD_MIN });
+  } catch (_) {}
+}
 // 초기 설정 로드
 chrome.storage.local.get([
+  STORAGE_KEYS.READY_AI_ENABLED,
   STORAGE_KEYS.DND_MODE,
   STORAGE_KEYS.BADGE_ENABLED,
   STORAGE_KEYS.BADGE_COUNT_ENABLED,
@@ -2311,8 +2370,10 @@ chrome.storage.local.get([
   if (isReadyAiPassiveDuplicateBackground()) {
     try { chrome.alarms.clear(GEMINI_PROBE_ALARM); } catch (_) {}
     try { chrome.alarms.clear(STEERING_QUEUE_PROBE_ALARM); } catch (_) {}
+    try { chrome.alarms.clear(SYSTEM_RESUME_ALARM); } catch (_) {}
     return;
   }
+  settings.readyAiEnabled = res[STORAGE_KEYS.READY_AI_ENABLED] !== false;
   if (typeof res[STORAGE_KEYS.DND_MODE] === 'boolean') settings.dndMode = res[STORAGE_KEYS.DND_MODE];
   if (typeof res[STORAGE_KEYS.BADGE_ENABLED] === 'boolean') settings.badgeEnabled = res[STORAGE_KEYS.BADGE_ENABLED];
   if (typeof res[STORAGE_KEYS.BADGE_COUNT_ENABLED] === 'boolean') settings.badgeCountEnabled = res[STORAGE_KEYS.BADGE_COUNT_ENABLED];
@@ -2351,6 +2412,12 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   if (isReadyAiPassiveDuplicateBackground()) return;
   if (areaName && areaName !== 'local') return;
   let dashboardRelevantChanged = false;
+  if (changes[STORAGE_KEYS.READY_AI_ENABLED]) {
+    settings.readyAiEnabled = getStorageChangeValue(changes, STORAGE_KEYS.READY_AI_ENABLED, true) !== false;
+    clearBadgesForAllTabs({ restoreQueueBadges: settings.readyAiEnabled });
+    if (settings.readyAiEnabled) kickActivePrimaryAiTabs('usage_enabled');
+    dashboardRelevantChanged = true;
+  }
   if (changes[STORAGE_KEYS.DND_MODE]) {
     settings.dndMode = !!getStorageChangeValue(changes, STORAGE_KEYS.DND_MODE, DEFAULT_SETTINGS.dndMode);
     dashboardRelevantChanged = true;
@@ -2430,6 +2497,7 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   if (dashboardRelevantChanged) bumpDashboardVersion();
 });
 function resolveSiteForUrl(url) {
+  if (settings.readyAiEnabled === false) return null;
   if (isChatGptUrl(url)) return getChatGptFallbackSite();
   const sitesApi = globalThis?.ReadyAi?.sites;
   if (!sitesApi?.resolveSiteFromConfig) return null;
@@ -2448,6 +2516,7 @@ function isGeminiSite(site) {
   return false;
 }
 async function tickGeminiProbe() {
+  if (settings.readyAiEnabled === false) return;
   // 1) 설정 OFF면 아무 것도 안 함
   if (!settings.geminiProbeEnabled) return;
   // 2) 현재 탭들 중 "Gemini로 감지되는" 탭만 골라서,
@@ -2521,6 +2590,7 @@ function ensureSteeringQueueProbeAlarm() {
   } catch (_) {}
 }
 async function tickSteeringQueueProbe() {
+  if (settings.readyAiEnabled === false) return;
   if (isReadyAiPassiveDuplicateBackground()) return;
   if (steeringQueueProbeInFlight) return;
   steeringQueueProbeInFlight = true;
@@ -2582,6 +2652,10 @@ try {
     }
     if (alarm.name === STEERING_QUEUE_PROBE_ALARM) {
       safeActionCall(tickSteeringQueueProbe());
+      return;
+    }
+    if (alarm.name === SYSTEM_RESUME_ALARM && isSystemResumeAlarmOverdue(alarm)) {
+      safeActionCall(recoverPrimaryAiTabsAfterWake('alarm_overdue'));
     }
   });
 } catch (_) {}
@@ -2695,7 +2769,7 @@ function updateIcon(tabId) {
   // Chrome 툴바/확장프로그램 메인 아이콘은 고정하고, 후속 지시 대기열 수만 badge로 표시한다.
   const iconPath = 'assets/bell_profile.png';
   const queueCount = Math.max(0, Number(tabStates?.[tabId]?.steeringQueueCount) || 0);
-  const badgeText = queueCount > 0 ? (queueCount > 99 ? '99+' : String(queueCount)) : '';
+  const badgeText = settings.readyAiEnabled !== false && queueCount > 0 ? (queueCount > 99 ? '99+' : String(queueCount)) : '';
   const signature = JSON.stringify({
     iconPath,
     badgeText,
@@ -2788,6 +2862,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!sender.tab) return;
   const tabId = sender.tab.id;
   const frameId = typeof sender.frameId === 'number' ? sender.frameId : 0;
+  if (message.action === 'system_resume_detected') {
+    const tabUrl = sender.tab?.url || sender.url || '';
+    if (frameId !== 0 || (!isChatGptUrl(tabUrl) && !isGoogleAiUrl(tabUrl))) {
+      sendResponse({ ok: false, message: 'not a supported top-frame AI tab' });
+      return;
+    }
+    safeActionCall(recoverPrimaryAiTabsAfterWake(message.reason || 'content_timer_gap'));
+    sendResponse({ ok: true });
+    return;
+  }
   if (message.action === 'ensure_content_for_current_chatgpt_tab') {
     if (isReadyAiPassiveDuplicateBackground()) {
       sendResponse({ ok: false, passive: true });
@@ -2798,7 +2882,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ ok: false, message: 'not top-frame ChatGPT' });
       return;
     }
-    ensureContentScripts(sender.tab, { allFrames: false, topFrameOnly: true, frameId: 0 })
+    ensureContentScripts(sender.tab, { allFrames: false, topFrameOnly: true, frameId: 0, documentId: sender.documentId })
       .then(async (ready) => {
         if (ready) {
           await pTabsSendMessage(tabId, {
@@ -3168,7 +3252,8 @@ if (chrome.webNavigation?.onCommitted) {
   };
   const handleChatGptNavigation = (details, reason) => {
     if (!details || details.frameId !== 0) return;
-    ensureChatGptContentForNavigation(details.tabId, details.url, reason);
+    if (reason === 'chatgpt_navigation_history') pTabsSendMessage(details.tabId, { action: 'conversation_scope_changed', topFrameOnly: true }, { frameId: 0 });
+    ensureChatGptContentForNavigation(details.tabId, details.url, reason, details.documentId);
   };
   chrome.webNavigation.onCommitted.addListener(
     (details) => handleChatGptNavigation(details, 'chatgpt_navigation_committed'),
@@ -3231,6 +3316,7 @@ chrome.notifications.onClosed.addListener((notificationId) => {
 // 탭 닫힘 정리
 chrome.tabs.onRemoved.addListener((tabId) => {
   if (isReadyAiPassiveDuplicateBackground()) return;
+  removeReadyAiTabSessions(tabId).catch(() => {});
   clearCustomTabTitleForTab(tabId);
   delete tabMetaCache[tabId];
   delete actionStateCache[tabId];
@@ -3279,6 +3365,58 @@ function purgeDisabledTabs() {
     if (removedAny) ensureSteeringQueueProbeAlarm();
   });
 }
+function pRefreshSiteConfig() {
+  return new Promise((resolve) => getSiteConfig(() => resolve()));
+}
+async function recoverPrimaryAiTabsAfterWake(reason = 'system_resume', options = {}) {
+  if (isReadyAiPassiveDuplicateBackground()) return { ok: false, passive: true };
+  if (systemResumeRecoveryPromise) return systemResumeRecoveryPromise;
+  const now = Date.now();
+  if (options.force !== true && now - systemResumeRecoveryAt < SYSTEM_RESUME_RECOVERY_COOLDOWN_MS) {
+    return { ok: true, skipped: true, reason: 'cooldown' };
+  }
+  systemResumeRecoveryAt = now;
+  systemResumeRecoveryPromise = (async () => {
+    await pRefreshSiteConfig();
+    const tabs = await pTabsQuery({});
+    const candidates = tabs.filter((tab) => {
+      if (!tab || typeof tab.id !== 'number' || tab.discarded) return false;
+      if (String(tab.status || '').toLowerCase() !== 'complete') return false;
+      const url = tab.url || '';
+      return isChatGptUrl(url) || isGoogleAiUrl(url);
+    });
+    const results = await Promise.all(candidates.map(async (tab) => {
+      try {
+        const ready = await ensureContentScripts(tab, {
+          allFrames: false,
+          topFrameOnly: true,
+          frameId: 0,
+        });
+        if (ready) {
+          await pTabsSendMessage(tab.id, {
+            action: 'force_check',
+            reason: reason || 'system_resume',
+            topFrameOnly: true,
+          }, { frameId: 0 });
+        }
+        return !!ready;
+      } catch (_) {
+        return false;
+      }
+    }));
+    return {
+      ok: true,
+      checked: candidates.length,
+      recovered: results.filter(Boolean).length,
+      reason: reason || 'system_resume',
+    };
+  })();
+  try {
+    return await systemResumeRecoveryPromise;
+  } finally {
+    systemResumeRecoveryPromise = null;
+  }
+}
 async function kickActivePrimaryAiTabs(reason) {
   if (isReadyAiPassiveDuplicateBackground()) return;
   getSiteConfig(async () => {
@@ -3313,12 +3451,19 @@ async function kickActivePrimaryAiTabs(reason) {
 }
 try {
   chrome.runtime.onStartup.addListener(() => {
-    safeActionCall(kickActivePrimaryAiTabs('onStartup'));
+    safeActionCall(recoverPrimaryAiTabsAfterWake('onStartup', { force: true }));
   });
 } catch (_) {}
 try {
   chrome.runtime.onInstalled.addListener(() => {
-    safeActionCall(kickActivePrimaryAiTabs('onInstalled'));
+    safeActionCall(recoverPrimaryAiTabsAfterWake('onInstalled', { force: true }));
   });
 } catch (_) {}
+try {
+  chrome.idle.setDetectionInterval(60);
+  chrome.idle.onStateChanged.addListener((state) => {
+    if (state === 'active') safeActionCall(recoverPrimaryAiTabsAfterWake('idle_active'));
+  });
+} catch (_) {}
+ensureSystemResumeAlarm();
 safeActionCall(kickActivePrimaryAiTabs('sw_init_active'));

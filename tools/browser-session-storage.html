@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="ko">
+<meta charset="utf-8">
+<title>Ready_AI 저장 회귀 검증</title>
+<style>
+body{font:16px/1.6 system-ui,sans-serif;max-width:900px;margin:40px auto;padding:24px;color:#20242c;background:#f5f6f8}
+main{background:white;padding:28px;border:1px solid #ddd;border-radius:16px}button{padding:12px 24px;font:inherit;border:0;border-radius:9px;background:#242831;color:white;cursor:pointer}
+li{margin:8px 0}.passed{color:#126f48}.failed{color:#a22929}pre{white-space:pre-wrap}
+</style>
+<main>
+<h1>Ready_AI 저장 회귀 검증</h1>
+<p>배포 저장 모듈을 브라우저의 실제 IndexedDB로 테스트합니다. 이 로컬 페이지의 시험 DB만 사용하며 설치된 확장의 저장 내용에는 접근하지 않습니다.</p>
+<button id="run">검증 실행</button>
+<p id="summary" role="status">실행 전</p>
+<ol id="results"></ol><pre id="error"></pre>
+</main>
+<script src="browser-session-storage.js"></script>
+<script src="../src/steering-session-store.js"></script>
+</html>

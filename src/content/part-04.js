@@ -23,11 +23,18 @@ function getComposerSelectors(siteKey) {
     return [
       '#prompt-textarea',
       'textarea[data-testid="prompt-textarea"]',
+      'textarea[data-testid*="prompt"]',
+      'textarea[name="prompt"]',
       'textarea[placeholder*="Message"]',
       'textarea[placeholder*="message"]',
       'textarea[placeholder*="메시지"]',
+      'textarea[placeholder*="edit" i]',
+      'textarea[placeholder*="image" i]',
       'div[contenteditable="true"][data-testid="prompt-textarea"]',
+      'div[contenteditable="true"][data-testid*="prompt"]',
       'div[contenteditable="true"][role="textbox"]',
+      '[role="dialog"] textarea',
+      '[aria-modal="true"] textarea',
       'form textarea',
       'textarea',
     ];
@@ -73,8 +80,11 @@ function getSendButtonSelectors(siteKey) {
   if (siteKey === 'chatgpt') {
     return [
       '[data-testid="send-button"]',
+      'button[data-testid*="send"]',
+      'button[data-testid*="submit"]',
       'button[aria-label*="Send message"]',
       'button[aria-label*="Send"]',
+      'button[aria-label*="Submit"]',
       'button[aria-label*="전송"]',
       'button[aria-label*="보내기"]',
       'form button[type="submit"]',
@@ -109,11 +119,66 @@ function getSendButtonSelectors(siteKey) {
     'button[type="submit"]',
   ];
 }
+function scoreChatGptComposerCandidate(el, activeElement = document.activeElement) {
+  if (!el || !isVisible(el)) return -999;
+  try {
+    if (typeof isSteeringTargetNode === 'function' && isSteeringTargetNode(el)) return -999;
+  } catch (_) {}
+  if (el.disabled === true || el.readOnly === true || el.getAttribute?.('aria-hidden') === 'true') return -999;
+  const tagName = String(el.tagName || '').toLowerCase();
+  const editable = tagName === 'textarea' || tagName === 'input' || el.isContentEditable || el.getAttribute?.('role') === 'textbox';
+  if (!editable) return -999;
+  const hay = [
+    el.id,
+    el.getAttribute?.('data-testid'),
+    el.getAttribute?.('name'),
+    el.getAttribute?.('placeholder'),
+    el.getAttribute?.('aria-label'),
+    el.getAttribute?.('role'),
+    el.className,
+  ].filter(Boolean).join(' ');
+  if (/\bsearch\b|검색/i.test(hay)) return -999;
+  let score = 0;
+  if (el === activeElement) score += 120;
+  if (/prompt-textarea/i.test(hay)) score += 42;
+  if (/\bprompt\b|message|메시지|edit|image|이미지|수정/i.test(hay)) score += 18;
+  if (el.getAttribute?.('role') === 'textbox') score += 8;
+  if (tagName === 'textarea') score += 7;
+  if (el.isContentEditable) score += 7;
+  try {
+    if (el.closest?.('[role="dialog"], [aria-modal="true"]')) score += 70;
+    if (el.closest?.('form')) score += 10;
+  } catch (_) {}
+  return score;
+}
+function findBestChatGptComposer() {
+  const selectors = getComposerSelectors('chatgpt');
+  const seen = new Set();
+  let best = null;
+  let bestScore = -999;
+  for (const selector of selectors) {
+    const candidates = qsa(selector);
+    for (const el of candidates) {
+      if (!el || seen.has(el)) continue;
+      seen.add(el);
+      if (scoreChatGptComposerCandidate(el, null) < 18) continue;
+      const score = scoreChatGptComposerCandidate(el);
+      if (score > bestScore) {
+        best = el;
+        bestScore = score;
+      }
+    }
+  }
+  return bestScore >= 18 ? best : null;
+}
 function getActiveComposer() {
+  if (getSiteKey() === 'chatgpt' || isChatGptSafeMode()) return findBestChatGptComposer();
   return findVisibleEditable(getComposerSelectors(getSiteKey()));
 }
-function getActiveSendButton() {
-  return findVisibleActionButton(getSendButtonSelectors(getSiteKey()));
+function getActiveSendButton(composer = null) {
+  const siteKey = getSiteKey() || (isChatGptSafeMode() ? 'chatgpt' : '');
+  const targetComposer = composer || getActiveComposer();
+  return findNearbySendButton(targetComposer) || findVisibleActionButton(getSendButtonSelectors(siteKey));
 }
 function getComposerSubmitForm(composer) {
   try {
@@ -255,7 +320,7 @@ function requestSubmitComposer(composer) {
   if (!form) return false;
   try {
     if (typeof form.requestSubmit === 'function') {
-      const submitter = getActiveSendButton() || findNearbySendButton(composer) || undefined;
+      const submitter = findNearbySendButton(composer) || getActiveSendButton(composer) || undefined;
       form.requestSubmit(submitter);
       return true;
     }
@@ -323,14 +388,28 @@ function setControlValue(el, value) {
 function waitForSteeringTick(ms = 80) {
   return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
 }
+function getChatGptUserTurnSnapshot() {
+  const nodes = Array.from(document.querySelectorAll('[data-message-author-role="user"]'));
+  const last = nodes[nodes.length - 1];
+  return { count: nodes.length, identity: last?.getAttribute?.('data-message-id') || last?.closest?.('[data-testid^="conversation-turn-"]')?.getAttribute?.('data-testid') || '', text: String(last?.textContent || '').replace(/\s+/g, ' ').trim() };
+}
 async function waitForSubmissionStart(composer, beforeText, timeout = 900, options = {}) {
   const baseline = String(beforeText || '').trim();
   const hadConversationTurns = !!options.hadConversationTurns;
   const beforeUrl = String(options.beforeUrl || location.href || '');
   const deadline = Date.now() + Math.max(120, timeout);
   while (Date.now() <= deadline) {
+    if (options.sessionToken && options.sessionToken !== steeringConversationSessionToken) return false;
     try { maybeRescanShadowRoots(); } catch (_) {}
     const current = String(getCurrentComposerText(composer) || '').trim();
+    if (options.chatGptUserBaseline) {
+      const before = options.chatGptUserBaseline;
+      const after = getChatGptUserTurnSnapshot();
+      const advanced = after.count > before.count || (!!after.identity && after.identity !== before.identity && after.count >= before.count);
+      if (advanced && (!baseline || after.text.includes(baseline.replace(/\s+/g, ' ')))) return true;
+      await waitForSteeringTick(70);
+      continue;
+    }
     if (!current && baseline) return true;
     if (!options.ignoreExistingGeneration) {
       try {

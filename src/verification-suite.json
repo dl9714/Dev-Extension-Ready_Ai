@@ -1,0 +1,421 @@
+{
+  "schemaVersion": 2,
+  "suiteVersion": "1.7.0",
+  "appVersion": "2026-10-02.7",
+  "completedAt": "2026-10-02",
+  "automated": {
+    "status": "passed",
+    "repeatRounds": 5,
+    "randomizedPlansPerRound": 125000,
+    "stableControlScenariosPerRound": 350,
+    "javascriptFilesChecked": 32,
+    "summary": "전체 9개 묶음 5회 반복 검증 통과",
+    "platformRuns": {
+      "chatgpt": {
+        "status": "passed",
+        "groups": 8,
+        "rounds": 5
+      },
+      "gemini": {
+        "status": "passed",
+        "groups": 6,
+        "rounds": 5
+      },
+      "aistudio": {
+        "status": "passed",
+        "groups": 5,
+        "rounds": 5
+      }
+    }
+  },
+  "cadencePolicy": {
+    "mode": "change_triggered",
+    "routineRepeatRounds": 1,
+    "criticalRepeatRounds": 5,
+    "structuralReviewDays": 90,
+    "nextStructuralReviewAfter": "2026-11-17",
+    "routine": "변경 범위 개별 검증 + 빠른 전체검증 1회",
+    "critical": "입력·전송·대기열·이미지 편집 로직 변경 시 전체검증 5회",
+    "gptWebMajor": "GPT·Gemini·AI Studio 입력창과 전송 구조 대변동 시 해당 플랫폼 실웹 전체검증",
+    "majorChangeSignals": [
+      "입력창 또는 전송·중지 버튼 선택자 변화",
+      "이미지 편집 모달·편집 입력창 구조 변화",
+      "GPT 업데이트 직후 전송 실패·중복 사용자 제보",
+      "실웹 구조 점검 또는 선택자 회귀 테스트 실패"
+    ]
+  },
+  "platforms": [
+    {
+      "id": "chatgpt",
+      "label": "GPT",
+      "name": "ChatGPT",
+      "runnerArg": "gpt"
+    },
+    {
+      "id": "gemini",
+      "label": "Gemini",
+      "name": "Gemini",
+      "runnerArg": "gemini"
+    },
+    {
+      "id": "aistudio",
+      "label": "AIS",
+      "name": "AI Studio",
+      "runnerArg": "ais"
+    }
+  ],
+  "categories": [
+    {
+      "id": "input",
+      "label": "입력·단축키",
+      "description": "Enter, Ctrl/⌘+Enter, Shift+Enter, 한글 조합"
+    },
+    {
+      "id": "generation",
+      "label": "생성·편집",
+      "description": "생성 감지, 이미지 편집, AI Studio Run"
+    },
+    {
+      "id": "queue",
+      "label": "후속·대기열",
+      "description": "후속 등록, 실행 순서, 자동 전송"
+    },
+    {
+      "id": "recovery",
+      "label": "복구·환경",
+      "description": "숨김, 절전 복귀, 중복 인스턴스, 연속 안정성"
+    },
+    {
+      "id": "ui",
+      "label": "UI·레이아웃",
+      "description": "패널 위치, 화면 경계, 검증 데이터 표시"
+    }
+  ],
+  "liveWeb": {
+    "status": "scheduled",
+    "structuralStatus": "passed",
+    "checkedAt": "2026-08-19",
+    "summary": "플랫폼별 실웹 검증 · 각 서비스 대변동 시",
+    "note": "GPT는 2/9 기준선을 확보했고 Gemini·AI Studio는 대변동 시 실행하도록 분리했습니다. 평소 버전은 실웹 메시지를 보내지 않으며 구조 점검은 90일 간격으로 수행합니다."
+  },
+  "groups": [
+    {
+      "id": "KEY-01",
+      "name": "Ctrl+Enter 후속 전환",
+      "version": "2.1",
+      "status": "passed",
+      "passedInAppVersion": "2026-10-02.7",
+      "passedAt": "2026-10-02",
+      "platforms": [
+        "chatgpt"
+      ],
+      "category": "input",
+      "script": "tools/test-ctrl-enter-followup-handoff.js",
+      "nodeArgs": [],
+      "summary": "즉시 전송 직후 Enter, 빠른 키 반복 중복 차단, 복구 전송 겹침, 응답 시작·완료 대기",
+      "evidence": "30개 상태 전이"
+    },
+    {
+      "id": "IMG-01",
+      "name": "ChatGPT 이미지 편집",
+      "version": "2.0",
+      "status": "passed",
+      "passedInAppVersion": "2026-10-02.7",
+      "passedAt": "2026-10-02",
+      "platforms": [
+        "chatgpt"
+      ],
+      "category": "generation",
+      "script": "tools/test-chatgpt-image-editing.js",
+      "nodeArgs": [],
+      "summary": "편집 모달 우선순위, 닫힘·비움·버튼 상태 전송 확인, 이미지 처리 감지",
+      "evidence": "31개 편집 경로"
+    },
+    {
+      "id": "STRESS-01",
+      "name": "키 입력·전송 스트레스",
+      "version": "2.0",
+      "status": "passed",
+      "passedInAppVersion": "2026-10-02.7",
+      "passedAt": "2026-10-02",
+      "platforms": [
+        "chatgpt",
+        "gemini"
+      ],
+      "category": "input",
+      "script": "tools/test-ctrl-enter-stress.js",
+      "nodeArgs": [
+        "--expose-gc"
+      ],
+      "summary": "일반 Enter, 후속 전환, Gemini 이중 Enter, 안정 전송과 메모리 유지",
+      "evidence": "무작위 12.5만 경로/회"
+    },
+    {
+      "id": "ROUTE-01",
+      "name": "Enter 라우팅 정책",
+      "version": "1.1",
+      "status": "passed",
+      "passedInAppVersion": "2026-10-02.7",
+      "passedAt": "2026-10-02",
+      "platforms": [
+        "chatgpt",
+        "gemini"
+      ],
+      "category": "queue",
+      "script": "tools/test-enter-routing.js",
+      "nodeArgs": [],
+      "summary": "Enter·Shift+Enter·Ctrl/Cmd+Enter 분기와 버전 연동",
+      "evidence": "40개 정책·통합 경로"
+    },
+    {
+      "id": "AISTUDIO-01",
+      "name": "AI Studio 후속 지시",
+      "version": "1.0",
+      "status": "passed",
+      "passedInAppVersion": "2026-10-02.7",
+      "passedAt": "2026-10-02",
+      "platforms": [
+        "aistudio"
+      ],
+      "category": "generation",
+      "script": "tools/test-aistudio-followup.js",
+      "nodeArgs": [],
+      "summary": "Run 버튼, 생성 감지, 완료 후 후속 전송",
+      "evidence": "33개 상태 경로"
+    },
+    {
+      "id": "WAKE-01",
+      "name": "절전·복귀 복구",
+      "version": "1.0",
+      "status": "passed",
+      "passedInAppVersion": "2026-10-02.7",
+      "passedAt": "2026-10-02",
+      "platforms": [
+        "chatgpt",
+        "gemini",
+        "aistudio"
+      ],
+      "category": "recovery",
+      "script": "tools/test-sleep-resume-recovery.js",
+      "nodeArgs": [],
+      "summary": "알람, 타이머 지연, 네트워크 복귀, 빌드 버전 일치",
+      "evidence": "복귀 훅·버전 검사"
+    },
+    {
+      "id": "RECOVERY-01",
+      "name": "콘텐츠 복구",
+      "version": "1.1",
+      "status": "passed",
+      "passedInAppVersion": "2026-10-02.7",
+      "passedAt": "2026-10-02",
+      "platforms": [
+        "chatgpt",
+        "gemini",
+        "aistudio"
+      ],
+      "category": "recovery",
+      "script": "tools/test-content-recovery.js",
+      "nodeArgs": [],
+      "summary": "중복 주입·시작 복구, Pro 장기 대기, 대화 왕복 경합, 전역 사용 중지, 파일 복구",
+      "evidence": "실제 워커 import, 10/40/90분 시뮬레이션, A/B/A 복구 경합, 파일 바이트 왕복"
+    },
+    {
+      "id": "LAYOUT-01",
+      "name": "후속 패널 위치",
+      "version": "1.0",
+      "status": "passed",
+      "passedInAppVersion": "2026-10-02.7",
+      "passedAt": "2026-10-02",
+      "platforms": [
+        "chatgpt",
+        "gemini",
+        "aistudio"
+      ],
+      "category": "ui",
+      "script": "tools/test-steering-position.js",
+      "nodeArgs": [],
+      "summary": "입력창 정렬, 화면 경계, 패널 위치 회귀",
+      "evidence": "위치 회귀 묶음"
+    },
+    {
+      "id": "UI-01",
+      "name": "검증 센터 UI·데이터",
+      "version": "1.0",
+      "status": "passed",
+      "passedInAppVersion": "2026-10-02.7",
+      "passedAt": "2026-10-02",
+      "platforms": [
+        "chatgpt",
+        "gemini",
+        "aistudio"
+      ],
+      "category": "ui",
+      "script": "tools/test-verification-center.js",
+      "nodeArgs": [],
+      "summary": "홈 요약, 상세 목록, 검증 데이터와 앱 버전 정합성",
+      "evidence": "UI·데이터 계약"
+    }
+  ],
+  "manualChecks": [
+    {
+      "id": "GPT-WEB-01",
+      "platform": "chatgpt",
+      "category": "input",
+      "name": "일반 대화 Ctrl+Enter 직후 빠른 Enter",
+      "status": "passed",
+      "passedInAppVersion": "2026-08-19.6",
+      "passedAt": "2026-08-19",
+      "delaysMs": [
+        25,
+        150,
+        350,
+        500,
+        2000
+      ],
+      "evidence": "5개 간격 모두 대기열 등록 후 순서대로 1회 전송"
+    },
+    {
+      "id": "GPT-WEB-02",
+      "platform": "chatgpt",
+      "category": "queue",
+      "name": "생성 중 Ctrl+Enter 조정 후 후속 대기",
+      "status": "scheduled"
+    },
+    {
+      "id": "GPT-WEB-03",
+      "platform": "chatgpt",
+      "category": "generation",
+      "name": "이미지 편집 모달 단일 전송과 후속 대기",
+      "status": "scheduled"
+    },
+    {
+      "id": "GPT-WEB-04",
+      "platform": "chatgpt",
+      "category": "generation",
+      "name": "이미지 업로드 준비 중 전송 안정성",
+      "status": "scheduled"
+    },
+    {
+      "id": "GPT-WEB-05",
+      "platform": "chatgpt",
+      "category": "input",
+      "name": "Ready_Ai OFF 일반 Enter·Ctrl+Enter",
+      "status": "scheduled"
+    },
+    {
+      "id": "GPT-WEB-06",
+      "platform": "chatgpt",
+      "category": "input",
+      "name": "Shift+Enter·한글 조합·키 반복 보호",
+      "status": "scheduled",
+      "evidence": "10ms 연속 Enter 중복 재현·수정 완료, 다음 GPT 웹 대변동 점검에서 재확인"
+    },
+    {
+      "id": "GPT-WEB-07",
+      "platform": "chatgpt",
+      "category": "queue",
+      "name": "응답 완료 후 후속 대기열 한 항목씩 자동 전송",
+      "status": "passed",
+      "passedInAppVersion": "2026-08-19.6",
+      "passedAt": "2026-08-19",
+      "evidence": "대기 5→4→3→2→1→0 순차 감소, BASE/A25/A150/A350/A500/A2000 각 1회"
+    },
+    {
+      "id": "GPT-WEB-08",
+      "platform": "chatgpt",
+      "category": "recovery",
+      "name": "숨김 탭·절전 복귀 후 큐 보존",
+      "status": "scheduled"
+    },
+    {
+      "id": "GPT-WEB-09",
+      "platform": "chatgpt",
+      "category": "recovery",
+      "name": "10회 연속 전송 중 중복·누락 없음",
+      "status": "scheduled"
+    },
+    {
+      "id": "GEM-WEB-01",
+      "platform": "gemini",
+      "category": "input",
+      "name": "Enter 대기·이중 Enter 즉시 반영",
+      "status": "scheduled",
+      "delaysMs": [
+        25,
+        150,
+        300,
+        500
+      ]
+    },
+    {
+      "id": "GEM-WEB-02",
+      "platform": "gemini",
+      "category": "queue",
+      "name": "생성 중 Ctrl+Enter 조정과 후속 대기",
+      "status": "scheduled"
+    },
+    {
+      "id": "GEM-WEB-03",
+      "platform": "gemini",
+      "category": "input",
+      "name": "Shift+Enter·한글 조합·키 반복 보호",
+      "status": "scheduled"
+    },
+    {
+      "id": "GEM-WEB-04",
+      "platform": "gemini",
+      "category": "queue",
+      "name": "후속 대기열 3개 순차 자동 전송",
+      "status": "scheduled"
+    },
+    {
+      "id": "GEM-WEB-05",
+      "platform": "gemini",
+      "category": "input",
+      "name": "Ready_Ai OFF 기본 입력 보존",
+      "status": "scheduled"
+    },
+    {
+      "id": "GEM-WEB-06",
+      "platform": "gemini",
+      "category": "recovery",
+      "name": "숨김·복귀와 10회 연속 안정성",
+      "status": "scheduled"
+    },
+    {
+      "id": "AIS-WEB-01",
+      "platform": "aistudio",
+      "category": "generation",
+      "name": "Run 실행·생성 시작·완료 감지",
+      "status": "scheduled"
+    },
+    {
+      "id": "AIS-WEB-02",
+      "platform": "aistudio",
+      "category": "input",
+      "name": "Ctrl+Enter 즉시 반영과 다음 Enter 대기",
+      "status": "scheduled"
+    },
+    {
+      "id": "AIS-WEB-03",
+      "platform": "aistudio",
+      "category": "queue",
+      "name": "후속 대기열 3개 순차 자동 전송",
+      "status": "scheduled"
+    },
+    {
+      "id": "AIS-WEB-04",
+      "platform": "aistudio",
+      "category": "input",
+      "name": "Shift+Enter·한글 조합·Ready_Ai OFF",
+      "status": "scheduled"
+    },
+    {
+      "id": "AIS-WEB-05",
+      "platform": "aistudio",
+      "category": "recovery",
+      "name": "숨김·복귀와 10회 연속 안정성",
+      "status": "scheduled"
+    }
+  ]
+}

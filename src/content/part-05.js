@@ -6,14 +6,20 @@ async function tryTriggerComposerSend(composer, trigger, options = {}) {
     hadConversationTurns = typeof hasChatGptConversationTurns === 'function' && hasChatGptConversationTurns();
   } catch (_) {}
   const beforeUrl = String(location.href || '');
+  const chatGptUserBaseline = isChatGptSafeMode() ? getChatGptUserTurnSnapshot() : null;
+  const sessionToken = steeringConversationSessionToken;
   let triggered = false;
   try { triggered = trigger() !== false; } catch (_) { triggered = false; }
   if (!triggered) return false;
-  return await waitForSubmissionStart(composer, beforeText, options.submitStartTimeoutMs || options.timeoutMs || 900, {
+  const sent = await waitForSubmissionStart(composer, beforeText, options.submitStartTimeoutMs || options.timeoutMs || (chatGptUserBaseline ? 3500 : 900), {
     hadConversationTurns,
     beforeUrl,
     ignoreExistingGeneration: !!options.ignoreExistingGeneration,
+    chatGptUserBaseline,
+    sessionToken,
   });
+  if (!sent && chatGptUserBaseline && !String(getCurrentComposerText(composer) || '').trim()) steeringChatGptSubmissionUncertain = true;
+  return sent;
 }
 function setSteeringStatus(text, isError = false) {
   if (!steeringRefs?.status) return;
@@ -334,7 +340,7 @@ function getSteeringQueueAttachments(item) {
   return [];
 }
 function getSteeringItemAttachmentCount(item) {
-  return getSteeringQueueAttachments(item).length;
+  return (Array.isArray(item?.files) ? item.files : (Array.isArray(item?.images) ? item.images : [])).length;
 }
 function getSteeringItemSummary(item) {
   const text = String(item?.text || '').trim();

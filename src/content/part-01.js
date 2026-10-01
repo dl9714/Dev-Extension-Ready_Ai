@@ -1,6 +1,31 @@
 // NOTE:
 // - content script는 <all_urls>에 주입된다.
 // - 하지만 실제 감시는 "등록/활성"된 사이트에서만 실행한다.
+// Capture the old isolated-world state before any globals are reset by reinjection.
+try {
+  if (globalThis.__ReadyAiCaptureSession) globalThis.__ReadyAiRecoveredSession = globalThis.__ReadyAiCaptureSession();
+  else if (typeof steeringQueue !== 'undefined' && Array.isArray(steeringQueue)) {
+    globalThis.__ReadyAiRecoveredSession = {
+      queue: steeringQueue, queueSeq: steeringQueueSeq, draft: steeringRefs?.input?.value ?? steeringDraftText,
+      attachments: steeringAttachments, attachmentSeq: steeringAttachmentSeq, panelOpen: steeringPanelOpen,
+      siteKey: steeringSessionSiteKey, paused: !!steeringProcessing, awaiting: steeringAwaitingTurnCompletion,
+      observed: steeringObservedGenerationSinceSend, baseline: steeringChatGptAssistantBaseline,
+      observedAt: steeringChatGptAssistantObservedAt, finalizedAt: steeringChatGptAssistantFinalizedAt,
+      generating: isGenerating, startedAt: chatGptLightGenerationStartedAt, watchUntil: chatGptLightGenerationWatchUntil,
+      editingId: steeringQueueEditingId, editingText: steeringQueueEditingText,
+    };
+    if (typeof stopMonitoring === 'function') stopMonitoring();
+  } else globalThis.__ReadyAiRecoveredSession = null;
+} catch (_) {}
+try {
+  for (const cleanup of globalThis.__ReadyAiEventCleanups || []) cleanup();
+  globalThis.__ReadyAiEventCleanups = [];
+  if (globalThis.__ReadyAiStorageListener) chrome.storage.onChanged.removeListener(globalThis.__ReadyAiStorageListener);
+} catch (_) {}
+function addReadyAiEventListener(target, type, handler, options) {
+  target.addEventListener(type, handler, options);
+  (globalThis.__ReadyAiEventCleanups || (globalThis.__ReadyAiEventCleanups = [])).push(() => target.removeEventListener(type, handler, options));
+}
 var activeSite = null; // { key, name, detection }
 var monitoring = false;
 var isGenerating = false;
@@ -50,6 +75,7 @@ var CHECK_INTERVAL_ACTIVE_MS = 650;
 var CHECK_INTERVAL_VISIBLE_IDLE_MS = 5000;
 var CHECK_INTERVAL_HIDDEN_ACTIVE_MS = 1800;
 var CHECK_INTERVAL_HIDDEN_IDLE_MS = 60000;
+var POLLING_RESUME_GRACE_MS = 10000;
 var MIN_CHECK_GAP_ACTIVE_MS = 400;
 var MIN_CHECK_GAP_IDLE_MS = 1500;
 var MIN_CHECK_GAP_HIDDEN_ACTIVE_MS = 1200;
@@ -58,6 +84,7 @@ var _checkScheduled = false;
 var _checkTimer = null;
 var _lastCheckAt = 0;
 var _currentPollingMs = 0;
+var _lastPollingTickAt = Date.now();
 var _statusQueryCache = null;
 var aiStudioRunRequestedAt = 0;
 var aiStudioGenerationProbeTimers = [];
@@ -134,6 +161,22 @@ function getDesiredPollingMs() {
   if (active) return CHECK_INTERVAL_ACTIVE_MS;
   return CHECK_INTERVAL_VISIBLE_IDLE_MS;
 }
+function isReadyAiPollingResumeGap(previousAt, now, expectedMs) {
+  const previous = Number(previousAt) || 0;
+  const current = Number(now) || 0;
+  const expected = Math.max(250, Number(expectedMs) || 0);
+  if (!previous || current <= previous) return false;
+  return current - previous >= expected + POLLING_RESUME_GRACE_MS;
+}
+function noteReadyAiPollingTick(now = Date.now()) {
+  const previousAt = _lastPollingTickAt;
+  _lastPollingTickAt = Number(now) || Date.now();
+  if (!isReadyAiPollingResumeGap(previousAt, _lastPollingTickAt, _currentPollingMs)) return false;
+  try {
+    if (typeof handleReadyAiSystemResume === 'function') handleReadyAiSystemResume('content_timer_gap');
+  } catch (_) {}
+  return true;
+}
 function ensurePolling(force = false) {
   if (!monitoring) return;
   if (typeof isReadyAiDuplicateContentInstance === 'function' && isReadyAiDuplicateContentInstance()) return;
@@ -145,7 +188,9 @@ function ensurePolling(force = false) {
   }
   _currentPollingMs = 0;
   _currentPollingMs = desiredMs;
+  _lastPollingTickAt = Date.now();
   checkInterval = window.setInterval(() => {
+    noteReadyAiPollingTick();
     scheduleCheck();
   }, desiredMs);
 }

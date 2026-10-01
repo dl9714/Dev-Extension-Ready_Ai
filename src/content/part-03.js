@@ -162,6 +162,11 @@ function isSteeringTurnWatchdogMature() {
   return Date.now() - steeringTurnCompletionWatchdogStartedAt >= getSteeringTurnWatchdogDelayMs();
 }
 function markSteeringGenerationObserved() {
+  try {
+    if (typeof clearChatGptNativeComposerImmediateHandoff === 'function') {
+      clearChatGptNativeComposerImmediateHandoff();
+    }
+  } catch (_) {}
   if (!steeringAwaitingTurnCompletion) return;
   steeringObservedGenerationSinceSend = true;
   clearSteeringAwaitingResponseStart();
@@ -256,6 +261,7 @@ function holdChatGptUnobservedSteeringTurn(reason = '') {
 }
 function recoverStaleSteeringTurnWait(reason = '') {
   if (!monitoring || !steeringAwaitingTurnCompletion) return false;
+  if (steeringStateRestoring || syncSteeringConversationScope()) return false;
   try { maybeRescanShadowRoots(); } catch (_) {}
   let generatingNow = false;
   try {
@@ -268,7 +274,6 @@ function recoverStaleSteeringTurnWait(reason = '') {
     isChatGptSafeMode()
     && steeringChatGptAssistantBaseline
     && !isSteeringChatGptAssistantTurnStable()
-    && (!chatGptLightGenerationWatchUntil || Date.now() < chatGptLightGenerationWatchUntil)
   );
   if (generatingNow || assistantTurnInProgress) {
     if (!isGenerating) {
@@ -304,6 +309,11 @@ function armSteeringTurnCompletionWatchdog(ms = 0) {
   }, delay);
 }
 function clearSteeringTurnCompletionWait() {
+  try {
+    if (typeof clearChatGptNativeComposerImmediateHandoff === 'function') {
+      clearChatGptNativeComposerImmediateHandoff();
+    }
+  } catch (_) {}
   steeringAwaitingTurnCompletion = false;
   steeringObservedGenerationSinceSend = false;
   clearSteeringChatGptAssistantObservation();
@@ -368,6 +378,7 @@ function isGoogleSteeringQueueWaitingForCompletion() {
   return (siteKey === 'gemini' || siteKey === 'aistudio') && completionStatus !== 'completed';
 }
 function canAutoSendSteeringNow(options = {}) {
+  if (steeringStateRestoring || steeringSessionStorageFailed || (steeringRestoredQueuePaused && !options.allowRestoredQueue)) return false;
   if (isChatGptUnobservedSteeringTurnPending()) return false;
   // Gemini와 AI Studio의 리치 편집기는 유휴 상태에서 확장 프로그램이
   // 자동으로 내용을 주입하면 편집기 재조정이 겹칠 수 있다. 자동 경로는
@@ -376,7 +387,7 @@ function canAutoSendSteeringNow(options = {}) {
   return hasActiveSteeringOffer() && !steeringSendLock && !steeringProcessing && !steeringAwaitingResponseStart && !steeringAwaitingTurnCompletion;
 }
 function canUserRunSteeringQueueNow() {
-  return !!(monitoring && steeringEnabled && steeringQueue.length && canAutoSendSteeringNow({ allowGoogleIdle: true }));
+  return !!(monitoring && steeringEnabled && steeringQueue.length && canAutoSendSteeringNow({ allowGoogleIdle: true, allowRestoredQueue: true }));
 }
 function getSteeringQueueWaitMessage() {
   if (!steeringQueue.length) return '전송할 대기가 없습니다.';
@@ -398,6 +409,49 @@ function wakeSteeringQueueAfterVisibilityRestore(reason = 'visibility') {
     return true;
   }
   scheduleSteeringQueueProcessing(0);
+  return true;
+}
+var readyAiResumeRecoveryTimers = [];
+var readyAiLastResumeRecoveryAt = 0;
+function clearReadyAiResumeRecoveryTimers() {
+  for (const timer of readyAiResumeRecoveryTimers.splice(0)) {
+    try { clearTimeout(timer); } catch (_) {}
+  }
+}
+function handleReadyAiSystemResume(reason = 'system_resume') {
+  if (!monitoring) return false;
+  if (typeof isReadyAiDuplicateContentInstance === 'function' && isReadyAiDuplicateContentInstance()) return false;
+  const now = Date.now();
+  if (now - readyAiLastResumeRecoveryAt < 2000) return false;
+  readyAiLastResumeRecoveryAt = now;
+  try {
+    document.documentElement?.setAttribute?.('data-ready-ai-last-resume-reason', String(reason || 'system_resume'));
+    document.documentElement?.setAttribute?.('data-ready-ai-last-resume-at', String(now));
+  } catch (_) {}
+  const refreshAfterResume = () => {
+    if (!monitoring) return;
+    if (typeof isReadyAiDuplicateContentInstance === 'function' && isReadyAiDuplicateContentInstance()) return;
+    ensurePolling(true);
+    if (isChatGptSafeMode()) {
+      try { armChatGptLightTitleBadgeBurst(); } catch (_) {}
+      try { startChatGptLightTitleBadgeKeepAlive(); } catch (_) {}
+    }
+    scheduleCheck(true);
+    wakeSteeringQueueAfterVisibilityRestore(reason);
+  };
+  clearReadyAiResumeRecoveryTimers();
+  refreshAfterResume();
+  for (const delay of [250, 1000, 3000]) {
+    readyAiResumeRecoveryTimers.push(setTimeout(refreshAfterResume, delay));
+  }
+  try {
+    chrome.runtime.sendMessage({
+      action: 'system_resume_detected',
+      reason: reason || 'system_resume',
+    }, () => {
+      try { void chrome.runtime.lastError; } catch (_) {}
+    });
+  } catch (_) {}
   return true;
 }
 function isSteeringFollowupWaiting() {
@@ -579,6 +633,28 @@ function getSteeringStableBottom(siteKey = getSiteKey()) {
   if (siteKey === 'gemini') return 111;
   return null;
 }
+function getSteeringModelSafeRight(anchor, preferredRight, bottom) {
+  if (!steeringPanelOpen || getSiteKey() !== 'chatgpt') return preferredRight;
+  const model = anchor.querySelector?.('[data-composer-navigation-target="reasoning"], [data-codex-intelligence-trigger], button[aria-haspopup="menu"]');
+  if (!model || !isVisible(model)) return preferredRight;
+  const control = model.getBoundingClientRect();
+  const host = steeringHost.getBoundingClientRect();
+  const width = host.width || Math.min(430, window.innerWidth - 28);
+  const height = host.height || 522;
+  const panelRight = window.innerWidth - preferredRight;
+  const panelBottom = window.innerHeight - bottom;
+  if (panelBottom <= control.top || panelBottom - height >= control.bottom
+    || panelRight <= control.left || panelRight - width >= control.right) return preferredRight;
+  const margin = 18;
+  const gap = 12;
+  // Prefer the screen-right space; keep the native model trigger clickable even
+  // when the new ChatGPT home composer is in the middle of the screen.
+  const rightSide = window.innerWidth - control.right - gap - width;
+  if (rightSide >= margin) return Math.min(preferredRight, Math.floor(rightSide));
+  const leftSide = window.innerWidth - control.left + gap;
+  if (window.innerWidth - leftSide - width >= margin) return Math.ceil(leftSide);
+  return preferredRight;
+}
 function positionSteeringUi(force = false) {
   if (!steeringHost) return;
   const anchor = getSteeringAnchorElement();
@@ -587,14 +663,17 @@ function positionSteeringUi(force = false) {
     try {
       const rect = anchor.getBoundingClientRect();
       const siteKey = getSiteKey();
+      const anchorRight = Math.round(window.innerWidth - rect.right);
       const isChatGpt = siteKey === 'chatgpt';
-      const chatGptRightShift = isChatGpt ? 250 : 0;
-      const chatGptScrollbarGutter = isChatGpt ? 12 : 0;
-      const right = Math.max(12 + chatGptScrollbarGutter, Math.round(window.innerWidth - rect.right - chatGptRightShift + chatGptScrollbarGutter));
+      const viewportRightDock = siteKey === 'gemini' ? 24 : (siteKey === 'aistudio' ? 120 : null);
+      let right = viewportRightDock != null
+        ? Math.max(12, Math.min(viewportRightDock, anchorRight))
+        : Math.max(12 + (isChatGpt ? 12 : 0), anchorRight - (isChatGpt ? 250 : 0) + (isChatGpt ? 12 : 0));
       const stableBottom = getSteeringStableBottom(siteKey);
       const bottom = stableBottom == null
         ? Math.max(12, Math.round(window.innerHeight - (rect.top - 10)))
         : stableBottom;
+      right = getSteeringModelSafeRight(anchor, right, bottom);
       const verticalMode = stableBottom == null ? 'anchor' : `${siteKey}-stable`;
       const signature = `${right}|${bottom}|${verticalMode}|${layoutKey}`;
       if (!force && steeringLastPositionSignature === signature) return;
@@ -646,9 +725,62 @@ function fitOpenSteeringUiInsideViewport() {
     steeringHost.style.bottom = `${nextBottom}px`;
   } catch (_) {}
 }
-window.addEventListener('resize', () => {
+function shouldYieldSteeringToSiteOverlay(steeringRects, overlayRects) {
+  const hasArea = (rect) => rect && [rect.left, rect.top, rect.right, rect.bottom].every(Number.isFinite)
+    && rect.right > rect.left && rect.bottom > rect.top;
+  return steeringRects.some((rect) => hasArea(rect) && overlayRects.some((overlay) => hasArea(overlay)
+    && rect.left < overlay.right && rect.right > overlay.left
+    && rect.top < overlay.bottom && rect.bottom > overlay.top));
+}
+function getChatGptOverlayRects() {
+  if (getSiteKey() !== 'chatgpt') return [];
+  const rects = [];
+  const selectors = '[data-radix-popper-content-wrapper], [role="menu"], [role="listbox"], [role="dialog"], [popover]';
+  for (const overlay of document.querySelectorAll(selectors)) {
+    if (steeringHost?.contains(overlay) || !isVisible(overlay)) continue;
+    if (overlay.getAttribute('aria-hidden') === 'true' || overlay.getAttribute('data-state') === 'closed') continue;
+    // Tooltips must not make the launcher flicker on hover.
+    if (overlay.querySelector('[role="tooltip"]')
+      && !overlay.querySelector('[role="menu"], [role="listbox"], [role="dialog"], [role="slider"]')) continue;
+    rects.push(overlay.getBoundingClientRect());
+  }
+  return rects;
+}
+function applySteeringOverlayYield() {
+  if (!steeringHost || isReadyAiDuplicateContentInstance()) return;
+  let shouldYield = false;
+  if (getSiteKey() === 'chatgpt' && steeringHost.style.display !== 'none' && steeringRoot) {
+    const steeringRects = Array.from(steeringRoot.querySelectorAll('.launcher, .card, .queue-wrap, .attachment-preview'))
+      .map((element) => element.getBoundingClientRect());
+    shouldYield = shouldYieldSteeringToSiteOverlay(steeringRects, getChatGptOverlayRects());
+  }
+  // Keep the DOM, draft, attachments and queue alive while the native menu is in use.
+  const visibility = shouldYield ? 'hidden' : '';
+  if (steeringHost.style.visibility !== visibility) steeringHost.style.visibility = visibility;
+}
+function scheduleSteeringOverlayYield() {
+  if (!monitoring || getSiteKey() !== 'chatgpt' || steeringOverlayRafId) return;
+  steeringOverlayRafId = window.requestAnimationFrame(() => {
+    steeringOverlayRafId = 0;
+    applySteeringOverlayYield();
+  });
+}
+function startSteeringOverlayWatch() {
+  if (getSiteKey() !== 'chatgpt' || steeringOverlayObserver || !document.body) return;
+  // Native popovers mount in body portals; avoid observing the conversation subtree.
+  steeringOverlayObserver = new MutationObserver(scheduleSteeringOverlayYield);
+  steeringOverlayObserver.observe(document.body, { childList: true });
+}
+function stopSteeringOverlayWatch() {
+  if (steeringOverlayObserver) steeringOverlayObserver.disconnect();
+  steeringOverlayObserver = null;
+  if (steeringOverlayRafId) window.cancelAnimationFrame(steeringOverlayRafId);
+  steeringOverlayRafId = 0;
+}
+addReadyAiEventListener(window, 'resize', () => {
   positionSteeringUi();
   fitOpenSteeringUiInsideViewport();
+  scheduleSteeringOverlayYield();
 });
 function isSteeringTarget(target) {
   if (!target) return false;

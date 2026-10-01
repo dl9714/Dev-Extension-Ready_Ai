@@ -1,6 +1,7 @@
 function mountSteeringUi() {
   if (isReadyAiDuplicateContentInstance()) return;
   try { (document.body || document.documentElement).appendChild(steeringHost); } catch (_) {}
+  startSteeringOverlayWatch();
   restoreSteeringDraftToInput();
   applySteeringTheme();
   positionSteeringUi(true);
@@ -45,6 +46,10 @@ function applySteeringUiNow() {
   }
   const refs = ensureSteeringUi();
   if (!refs) return;
+  setSteeringDisabledIfChanged(refs.input, steeringStateRestoring || steeringSessionStorageFailed);
+  if (refs.queueWrap) refs.queueWrap.inert = steeringStateRestoring || steeringSessionStorageFailed;
+  if (refs.attachmentWrap) refs.attachmentWrap.inert = steeringStateRestoring || steeringSessionStorageFailed;
+  startSteeringOverlayWatch();
   const queueCountLabel = getSteeringQueueCountLabel();
   setSteeringTextIfChanged(refs.title, getSteeringStateLabel());
   setSteeringTextIfChanged(refs.meta, queueCountLabel);
@@ -75,11 +80,11 @@ function applySteeringUiNow() {
     refs.newChatCount.value = String(steeringNewChatTabCount);
   }
   setSteeringTextIfChanged(refs.primary, steeringAdvancedEnabled ? getSteeringPrimaryLabel() : '후속 대기');
-  setSteeringDisabledIfChanged(refs.primary, false);
+  setSteeringDisabledIfChanged(refs.primary, steeringStateRestoring);
   const hasDraftText = !!String(refs.input?.value || '').trim();
   const hasDraftImages = getSteeringDraftAttachmentCount() > 0;
   setSteeringDisabledIfChanged(refs.newChatSend, steeringNewChatSendPending || !steeringAdvancedEnabled || !hasDraftText || hasDraftImages);
-  setSteeringDisabledIfChanged(refs.sendNow, !hasDraftText && !hasDraftImages || steeringProcessing);
+  setSteeringDisabledIfChanged(refs.sendNow, !hasDraftText && !hasDraftImages || steeringProcessing || steeringStateRestoring);
   setSteeringDisabledIfChanged(refs.clear, !steeringQueue.length && !hasDraftText && !hasDraftImages);
   const canRunNext = canUserRunSteeringQueueNow();
   if (refs.runNext) {
@@ -104,8 +109,11 @@ function applySteeringUiNow() {
   syncTitleBadgeFromUiRender(false);
   setSteeringDisplayIfChanged(steeringHost, (steeringPanelOpen || steeringLauncherVisible) ? 'block' : 'none');
   fitOpenSteeringUiInsideViewport();
+  applySteeringOverlayYield();
 }
 function updateSteeringUi() {
+  syncSteeringConversationScope();
+  scheduleSteeringSessionSave();
   if (steeringUiRafId) return;
   const schedule = window.requestAnimationFrame || ((cb) => window.setTimeout(cb, 16));
   steeringUiRafId = schedule(() => {
@@ -118,9 +126,9 @@ function updateSteeringUi() {
 // =========================
 // Generating detection rules
 // =========================
-var CHATGPT_IMAGE_GENERATING_RE = /(\b(?:creating|generating|making|rendering|drawing)\s+(?:an?\s+)?images?\b|\bimages?\s+(?:is|are|being)?\s*(?:created|generated|rendered)\b|이미지(?:를|가)?\s*(?:생성|만들|그리)(?:하는|하고\s*있는|고\s*있는|는)?\s*중|이미지\s*생성\s*중)/i;
+var CHATGPT_IMAGE_GENERATING_RE = /(\b(?:creating|generating|making|rendering|drawing|editing|updating|processing)\s+(?:(?:an?|the)\s+)?images?\b|\b(?:applying|processing)\s+(?:the\s+)?(?:image\s+)?(?:edit|change)s?\b|\bimages?\s+(?:is|are)\s+being\s+(?:created|generated|rendered|edited|updated|processed)\b|\bimages?\s+(?:generation|editing|processing)\s+(?:is\s+)?(?:in\s+progress|underway)\b|이미지(?:를|가)?\s*(?:생성|만들|그리|편집|수정|처리|업데이트)(?:하는|하고\s*있는|고\s*있는|는)?\s*중|이미지\s*(?:생성|편집|수정|처리)\s*중)/i;
 var CHATGPT_STOP_SELECTOR = '[data-testid="stop-button"],button[aria-label*="Stop"],button[aria-label*="stop"],button[aria-label*="\uC911\uC9C0"],button[data-testid*="stop"]';
-var CHATGPT_IMAGE_STATUS_SELECTOR = '[role="status"],[aria-live],[aria-busy="true"],[data-testid*="image-generation"],[data-testid*="image_generation"],[data-testid*="generating-image"],[data-testid*="image-gen"],[data-testid*="progress"],[data-testid*="loading"]';
+var CHATGPT_IMAGE_STATUS_SELECTOR = '[role="status"],[aria-live],[aria-busy="true"],[data-testid*="image-generation"],[data-testid*="image_generation"],[data-testid*="generating-image"],[data-testid*="editing-image"],[data-testid*="image-edit"],[data-testid*="image-gen"],[data-testid*="progress"],[data-testid*="loading"]';
 var CHATGPT_TURN_SELECTOR = '[data-message-author-role="assistant"],[data-testid^="conversation-turn-"],article[data-testid*="conversation-turn"]';
 var CHATGPT_PROGRESS_SELECTOR = '[role="progressbar"],[aria-busy="true"],[data-testid*="progress"],[data-testid*="loading"],.animate-spin,.animate-pulse,[class*="shimmer"],[class*="skeleton"]';
 function getElementSignalText(el) {
@@ -137,7 +145,7 @@ function getElementSignalText(el) {
 function hasChatGptImageGenerationSignal(el) {
   const signal = getElementSignalText(el);
   if (CHATGPT_IMAGE_GENERATING_RE.test(signal)) return true;
-  return /(?:image|이미지).*(?:generat|creat|progress|loading|skeleton|생성|진행|로딩)|(?:generat|creat).*(?:image)/i.test(signal);
+  return /(?:image|이미지).*(?:generat|creat|editing|updating|processing|progress|loading|skeleton|생성\s*중|편집\s*중|수정\s*중|처리\s*중|진행|로딩)|(?:generating|creating|editing|updating|processing).*(?:image)/i.test(signal);
 }
 function hasChatGptProgressIndicator(el) {
   if (!el) return false;
@@ -171,20 +179,25 @@ function detectChatGPTImageGenerating() {
   for (let i = statusStart; i < statusCandidates.length; i++) {
     const el = statusCandidates[i];
     if (!isVisible(el)) continue;
-    if (hasChatGptImageGenerationSignal(el)) return true;
+    const signal = getElementSignalText(el);
+    if (!CHATGPT_IMAGE_GENERATING_RE.test(signal)) continue;
+    const ownText = String(el.textContent || '').replace(/\s+/g, ' ').trim();
+    const testId = String(el.getAttribute?.('data-testid') || '');
+    const ariaBusy = String(el.getAttribute?.('aria-busy') || '').toLowerCase() === 'true';
+    if (ariaBusy || /(?:generating|editing)-image|image-(?:generation|edit)|progress|loading/i.test(testId) || ownText.length <= 360) return true;
   }
   const turns = getVisibleChatGptTurnCandidates();
   for (let i = turns.length - 1; i >= 0; i--) {
     const turn = turns[i];
     if (isLikelyUserChatGptTurn(turn)) continue;
-    if (CHATGPT_IMAGE_GENERATING_RE.test(getElementSignalText(turn))) return true;
     if (hasChatGptProgressIndicator(turn) && hasChatGptImageGenerationSignal(turn)) return true;
   }
   return false;
 }
 function detectChatGPTGenerating() {
   const mergedBtns = qsa(CHATGPT_STOP_SELECTOR);
-  return mergedBtns.some((btn) => isVisible(btn) && isEnabledButtonLike(btn));
+  if (mergedBtns.some((btn) => isVisible(btn) && isEnabledButtonLike(btn))) return true;
+  return detectChatGPTImageGenerating();
 }
 function detectGeminiGenerating() {
   // Gemini: "중지" 또는 "Stop" 단어가 들어간 버튼이 화면에 보이는지 확인
@@ -475,7 +488,14 @@ function isEditableInteractionTarget(target) {
   return false;
 }
 function getChatGptNativeComposerForEventTarget(target) {
-  if (!target || getSiteKey() !== 'chatgpt' || isSteeringTarget(target)) return null;
+  if (!target || !isChatGptSafeMode() || isSteeringTarget(target)) return null;
+  let directComposer = null;
+  try {
+    directComposer = target.closest?.('textarea, div[contenteditable="true"], [role="textbox"][contenteditable="true"]') || null;
+  } catch (_) {
+    directComposer = null;
+  }
+  if (directComposer && scoreChatGptComposerCandidate(directComposer, null) >= 18) return directComposer;
   const composer = getActiveComposer();
   if (!composer) return null;
   try {
@@ -485,6 +505,71 @@ function getChatGptNativeComposerForEventTarget(target) {
 }
 var chatGptNativeComposerImmediateFallbackTimer = null;
 var chatGptNativeComposerImmediateFallbackSending = false;
+var chatGptNativeComposerImmediateHandoffUntil = 0;
+var CHATGPT_NATIVE_COMPOSER_IMMEDIATE_HANDOFF_MS = 6500;
+var chatGptNativeComposerRecentSubmitSignature = '';
+var chatGptNativeComposerRecentSubmitAt = 0;
+var chatGptNativeComposerRecentSubmitTarget = null;
+var CHATGPT_NATIVE_COMPOSER_REPEAT_DEDUPE_MS = 320;
+function getChatGptNativeComposerSubmitSignature(text) {
+  return normalizeChatGptShortcutText(text);
+}
+function rememberChatGptNativeComposerSubmit(text, composer, now = Date.now()) {
+  chatGptNativeComposerRecentSubmitSignature = getChatGptNativeComposerSubmitSignature(text);
+  chatGptNativeComposerRecentSubmitAt = Math.max(0, Number(now) || 0);
+  chatGptNativeComposerRecentSubmitTarget = composer || null;
+}
+function isRecentDuplicateChatGptNativeComposerSubmit(text, composer, now = Date.now()) {
+  const signature = getChatGptNativeComposerSubmitSignature(text);
+  const elapsed = Math.max(0, Number(now) || 0) - chatGptNativeComposerRecentSubmitAt;
+  return !!(
+    signature
+    && signature === chatGptNativeComposerRecentSubmitSignature
+    && composer === chatGptNativeComposerRecentSubmitTarget
+    && chatGptNativeComposerRecentSubmitAt > 0
+    && elapsed >= 0
+    && elapsed <= CHATGPT_NATIVE_COMPOSER_REPEAT_DEDUPE_MS
+  );
+}
+function clearChatGptNativeComposerImmediateHandoff() {
+  chatGptNativeComposerImmediateHandoffUntil = 0;
+}
+function armChatGptNativeComposerImmediateHandoff(options = {}) {
+  if (!monitoring || !steeringEnabled) {
+    clearChatGptNativeComposerImmediateHandoff();
+    return false;
+  }
+  chatGptNativeComposerImmediateHandoffUntil = Date.now()
+    + Math.max(1000, Number(options.timeoutMs) || CHATGPT_NATIVE_COMPOSER_IMMEDIATE_HANDOFF_MS);
+  try {
+    if (options.generating) clearSteeringChatGptAssistantObservation();
+    else captureSteeringChatGptAssistantBaseline();
+  } catch (_) {}
+  return true;
+}
+function isChatGptNativeComposerFollowupGateActive() {
+  if (!monitoring || !steeringEnabled) return false;
+  return !!(
+    chatGptNativeComposerImmediateFallbackSending
+    || steeringAwaitingResponseStart
+    || steeringAwaitingTurnCompletion
+    || Date.now() <= chatGptNativeComposerImmediateHandoffUntil
+  );
+}
+function confirmChatGptNativeComposerImmediateSubmission(options = {}) {
+  clearChatGptNativeComposerImmediateHandoff();
+  if (!monitoring || !steeringEnabled) return false;
+  const observedGeneration = !!options.observedGeneration;
+  clearSteeringCompletionOffer();
+  steeringAwaitingTurnCompletion = true;
+  steeringObservedGenerationSinceSend = observedGeneration;
+  if (observedGeneration) clearSteeringAwaitingResponseStart();
+  else armSteeringAwaitingResponseStart();
+  setChatGptLightGenerating(true, { observed: observedGeneration });
+  armSteeringTurnCompletionWatchdog();
+  armSteeringSendLock();
+  return true;
+}
 function normalizeChatGptShortcutText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
 }
@@ -495,55 +580,117 @@ function countRecentChatGptUserTurnText(text) {
   try { turns = Array.from(document.querySelectorAll('[data-message-author-role="user"]')).slice(-20); } catch (_) { turns = []; }
   return turns.filter((turn) => normalizeChatGptShortcutText(turn?.innerText || turn?.textContent || '') === expected).length;
 }
-async function sendChatGptNativeComposerImmediately(composer, text) {
+async function sendChatGptNativeComposerImmediately(composer, text, options = {}) {
   chatGptNativeComposerImmediateFallbackSending = true;
   try {
-    const generatingNow = !!(isGenerating || detectChatGptGeneratingLight());
-    const sent = await sendSteeringItemImmediately({ text, files: [], images: [] }, {
-      source: 'native_chatgpt_composer_steer_now',
-      preferKeyboardShortcut: generatingNow,
-      submitStartTimeoutMs: 1200,
+    const result = await sendChatGptImmediateViaStableControls(composer, text, 5200, {
+      interruptExistingGeneration: !!options.interruptExistingGeneration,
     });
-    if (sent) return true;
+    if (result?.ok && result?.sent) {
+      confirmChatGptNativeComposerImmediateSubmission({
+        observedGeneration: !!options.interruptExistingGeneration,
+      });
+      return true;
+    }
     try {
       if (!String(getCurrentComposerText(composer) || '').trim()) setControlValue(composer, text);
       composer?.focus?.();
     } catch (_) {}
+    clearChatGptNativeComposerImmediateHandoff();
     return false;
   } finally {
     chatGptNativeComposerImmediateFallbackSending = false;
   }
 }
-function scheduleChatGptNativeComposerImmediateFallback(composer, text) {
+function scheduleChatGptNativeComposerImmediateFallback(composer, text, options = {}) {
   if (chatGptNativeComposerImmediateFallbackTimer) {
     try { clearTimeout(chatGptNativeComposerImmediateFallbackTimer); } catch (_) {}
   }
   const matchingTurnCountBefore = countRecentChatGptUserTurnText(text);
   chatGptNativeComposerImmediateFallbackTimer = setTimeout(() => {
     chatGptNativeComposerImmediateFallbackTimer = null;
-    if (countRecentChatGptUserTurnText(text) > matchingTurnCountBefore) return;
-    const liveComposer = getActiveComposer() || composer;
+    const matchingTurnCreated = countRecentChatGptUserTurnText(text) > matchingTurnCountBefore;
+    if (matchingTurnCreated || composer?.isConnected === false) {
+      confirmChatGptNativeComposerImmediateSubmission({
+        observedGeneration: !!options.interruptExistingGeneration,
+      });
+      return;
+    }
+    const liveComposer = getChatGptNativeComposerForEventTarget(composer) || getActiveComposer() || composer;
     const currentText = normalizeChatGptShortcutText(getCurrentComposerText(liveComposer));
-    if (!currentText || currentText !== normalizeChatGptShortcutText(text)) return;
-    void sendChatGptNativeComposerImmediately(liveComposer, text);
-  }, 300);
+    if (!currentText || currentText !== normalizeChatGptShortcutText(text)) {
+      confirmChatGptNativeComposerImmediateSubmission({
+        observedGeneration: !!options.interruptExistingGeneration,
+      });
+      return;
+    }
+    void sendChatGptNativeComposerImmediately(liveComposer, text, {
+      interruptExistingGeneration: !!options.interruptExistingGeneration,
+    });
+  }, 360);
+}
+function getChatGptNativeComposerEnterPlan(event, options = {}) {
+  if (!event || event.key !== 'Enter' || event.repeat || event.isComposing) return { mode: 'ignore', interruptExistingGeneration: false };
+  if (event.shiftKey || event.altKey) return { mode: 'ignore', interruptExistingGeneration: false };
+  const generating = !!options.generating;
+  const awaitingImmediateResponse = !!options.awaitingImmediateResponse;
+  const readyAiQueueEnabled = !!(options.monitoring && options.steeringEnabled);
+  if (event.ctrlKey || event.metaKey) {
+    return {
+      mode: 'native_fallback',
+      interruptExistingGeneration: !!(readyAiQueueEnabled && generating),
+    };
+  }
+  if (readyAiQueueEnabled && (generating || awaitingImmediateResponse)) {
+    return { mode: 'queue', interruptExistingGeneration: false };
+  }
+  return { mode: 'ignore', interruptExistingGeneration: false };
 }
 function handleChatGptNativeComposerFollowupEnter(event) {
-  if (!event || event.key !== 'Enter' || event.repeat || event.isComposing) return;
+  if (!event || event.key !== 'Enter' || event.isComposing) return;
   if (!event.isTrusted) return;
   if (event.shiftKey || event.altKey) return;
-  if (chatGptNativeComposerImmediateFallbackSending) return;
-  if (!monitoring || !steeringEnabled || !IS_TOP_FRAME) return;
+  if (!IS_TOP_FRAME) return;
   if (!isChatGptSafeMode() || isReadyAiDuplicateContentInstance()) return;
   const composer = getChatGptNativeComposerForEventTarget(event.target);
   if (!composer) return;
-  const generatingNow = !!(isGenerating || detectChatGptGeneratingLight());
-  if (!generatingNow) return;
   const text = String(getCurrentComposerText(composer) || '').trim();
   if (!text) return;
-  if (event.ctrlKey || event.metaKey) {
+  if (
+    monitoring
+    && steeringEnabled
+    && isRecentDuplicateChatGptNativeComposerSubmit(text, composer)
+  ) {
+    try { event.preventDefault(); } catch (_) {}
+    try { event.stopImmediatePropagation(); } catch (_) {
+      try { event.stopPropagation(); } catch (_) {}
+    }
+    setSteeringStatus('빠른 연속 Enter의 중복 전송을 막았습니다.');
+    updateSteeringUi();
+    return;
+  }
+  if (event.repeat) return;
+  let generatingNow = false;
+  try { generatingNow = !!(isGenerating || detectChatGptGeneratingLight()); } catch (_) {}
+  const enterPlan = getChatGptNativeComposerEnterPlan(event, {
+    monitoring,
+    steeringEnabled,
+    generating: generatingNow,
+    awaitingImmediateResponse: isChatGptNativeComposerFollowupGateActive(),
+  });
+  if (enterPlan.mode === 'native_fallback') {
+    rememberChatGptNativeComposerSubmit(text, composer);
+    armChatGptNativeComposerImmediateHandoff({ generating: generatingNow });
     if (!chatGptNativeComposerImmediateFallbackSending) {
-      scheduleChatGptNativeComposerImmediateFallback(composer, text);
+      scheduleChatGptNativeComposerImmediateFallback(composer, text, {
+        interruptExistingGeneration: enterPlan.interruptExistingGeneration,
+      });
+    }
+    return;
+  }
+  if (enterPlan.mode !== 'queue') {
+    if (!event.ctrlKey && !event.metaKey) {
+      rememberChatGptNativeComposerSubmit(text, composer);
     }
     return;
   }
@@ -553,8 +700,9 @@ function handleChatGptNativeComposerFollowupEnter(event) {
   }
   const queued = enqueueSteeringPrompt(text, { source: 'native_chatgpt_composer' });
   if (!queued) return;
+  rememberChatGptNativeComposerSubmit(text, composer);
   setControlValue(composer, '');
-  setChatGptLightGenerating(true, { observed: true });
+  setChatGptLightGenerating(true, { observed: generatingNow });
   setSteeringStatus(`${getSteeringQueueCountLabel()} · 응답이 끝나면 자동 전송합니다.`);
   updateSteeringUi();
 }

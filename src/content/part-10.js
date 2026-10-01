@@ -38,7 +38,7 @@ var STEERING_UI_MARKUP_TEMPLATE = `
           <textarea class="input" id="ready-ai-steering-input" placeholder="후속 지시를 입력하세요 · 파일/폴더 드래그 가능"></textarea>
           <div class="shortcut-row" aria-label="후속 지시 단축키 안내">
             <span><kbd>Enter</kbd> 다음 작업으로 대기</span>
-            <span><kbd>Ctrl/⌘ Enter</kbd> 현재 작업에 바로 반영</span>
+            <span><kbd>Enter ×2 / Ctrl/⌘ Enter</kbd> 현재 작업에 바로 반영</span>
           </div>
         </div>
         <div class="drop-shield" id="ready-ai-steering-drop-shield" hidden>여기에 놓으면 파일 첨부</div>
@@ -233,27 +233,46 @@ function getSteeringComposerEnterMode(event) {
   if (event.shiftKey) return 'linebreak';
   return event.ctrlKey || event.metaKey ? 'immediate' : 'queue';
 }
+function getSteeringComposerKeyboardPlan(event, options = {}) {
+  const baseMode = getSteeringComposerEnterMode(event);
+  const now = Math.max(0, Number(options.now) || Date.now());
+  const lastPlainEnterAt = Math.max(0, Number(options.lastPlainEnterAt) || 0);
+  const doubleEnterWindowMs = Math.max(180, Math.min(600, Number(options.doubleEnterWindowMs) || 300));
+  const isDoubleEnter = baseMode === 'queue'
+    && lastPlainEnterAt > 0
+    && now >= lastPlainEnterAt
+    && now - lastPlainEnterAt <= doubleEnterWindowMs;
+  if (isDoubleEnter) {
+    return { mode: 'immediate', delayMs: 0, nextPlainEnterAt: 0, doubleEnter: true };
+  }
+  if (baseMode === 'queue') {
+    return { mode: 'queue', delayMs: doubleEnterWindowMs, nextPlainEnterAt: now, doubleEnter: false };
+  }
+  return { mode: baseMode, delayMs: 0, nextPlainEnterAt: 0, doubleEnter: false };
+}
 function bindSteeringUiEvents() {
   let steeringComposerSubmitTimer = null;
-  let steeringComposerImmediateRequested = false;
+  let steeringComposerPlainEnterAt = 0;
   let steeringComposerAllowLineBreakUntil = 0;
   const handledSteeringComposerKeydowns = new WeakSet();
   const submitSteeringComposerFromKeyboard = (options = {}) => {
     const run = () => {
       steeringComposerSubmitTimer = null;
+      steeringComposerPlainEnterAt = 0;
       const input = steeringRefs?.input;
       if (!input) return;
       if (options.removeInsertedLineBreak) {
         try { input.value = String(input.value || '').replace(/(?:\r?\n)+$/, ''); } catch (_) {}
       }
       syncSteeringDraftFromInput();
-      const sendImmediately = options.sendImmediately === true || steeringComposerImmediateRequested;
-      steeringComposerImmediateRequested = false;
-      if (sendImmediately) sendSteeringDraftImmediately();
+      if (options.sendImmediately === true) sendSteeringDraftImmediately();
       else submitSteeringInput();
     };
     try { clearTimeout(steeringComposerSubmitTimer); } catch (_) {}
-    if (options.defer) steeringComposerSubmitTimer = window.setTimeout(run, 0);
+    steeringComposerSubmitTimer = null;
+    const delayMs = Math.max(0, Number(options.delayMs) || 0);
+    if (delayMs > 0) steeringComposerSubmitTimer = window.setTimeout(run, delayMs);
+    else if (options.defer) steeringComposerSubmitTimer = window.setTimeout(run, 0);
     else run();
   };
   const handleSteeringComposerKeydown = (event) => {
@@ -261,7 +280,12 @@ function bindSteeringUiEvents() {
     if (handledSteeringComposerKeydowns.has(event)) return;
     handledSteeringComposerKeydowns.add(event);
     try { event.stopPropagation(); } catch (_) {}
-    const enterMode = getSteeringComposerEnterMode(event);
+    const now = Date.now();
+    const keyboardPlan = getSteeringComposerKeyboardPlan(event, {
+      now,
+      lastPlainEnterAt: steeringComposerSubmitTimer ? steeringComposerPlainEnterAt : 0,
+    });
+    const enterMode = keyboardPlan.mode;
     if (enterMode === 'repeat') {
       try { event.preventDefault(); } catch (_) {}
       return;
@@ -277,13 +301,24 @@ function bindSteeringUiEvents() {
       steeringComposerAllowLineBreakUntil = Date.now() + 250;
       return;
     }
-    steeringComposerImmediateRequested = enterMode === 'immediate';
-    if (event.isComposing || event.keyCode === 229) {
-      submitSteeringComposerFromKeyboard({ defer: true });
+    const composing = !!(event.isComposing || event.keyCode === 229);
+    if (!composing) {
+      try { event.preventDefault(); } catch (_) {}
+    }
+    if (enterMode === 'queue') {
+      steeringComposerPlainEnterAt = keyboardPlan.nextPlainEnterAt;
+      submitSteeringComposerFromKeyboard({
+        delayMs: keyboardPlan.delayMs,
+        removeInsertedLineBreak: composing,
+      });
       return;
     }
-    try { event.preventDefault(); } catch (_) {}
-    submitSteeringComposerFromKeyboard();
+    steeringComposerPlainEnterAt = 0;
+    submitSteeringComposerFromKeyboard({
+      defer: composing,
+      removeInsertedLineBreak: composing,
+      sendImmediately: true,
+    });
   };
   const consume = (handler) => (event) => {
     try { event.preventDefault(); } catch (_) {}

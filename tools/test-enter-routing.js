@@ -20,9 +20,11 @@ vm.runInContext(
   `${extractSimpleFunction(part06, 'shouldHoldInitialChatGptQueueItem')}\n`
     + `${extractSimpleFunction(part06, 'shouldHoldSteeringQueueHeadForFirstChatGptTurn')}\n`
     + `${extractSimpleFunction(part10, 'getSteeringComposerEnterMode')}\n`
+    + `${extractSimpleFunction(part10, 'getSteeringComposerKeyboardPlan')}\n`
     + 'this.policy = shouldHoldInitialChatGptQueueItem;\n'
     + 'this.queuePolicy = shouldHoldSteeringQueueHeadForFirstChatGptTurn;\n'
-    + 'this.enterMode = getSteeringComposerEnterMode;',
+    + 'this.enterMode = getSteeringComposerEnterMode;\n'
+    + 'this.keyboardPlan = getSteeringComposerKeyboardPlan;',
   context
 );
 
@@ -86,13 +88,29 @@ const repeatedModes = [
 ];
 assert.deepEqual(repeatedModes, ['queue', 'queue', 'queue', 'queue', 'immediate'], 'repeated queue entries never poison the next Ctrl+Enter');
 
+assert.deepEqual(
+  JSON.parse(JSON.stringify(context.keyboardPlan({ key: 'Enter' }, { now: 1000, lastPlainEnterAt: 0 }))),
+  { mode: 'queue', delayMs: 300, nextPlainEnterAt: 1000, doubleEnter: false },
+  'first Enter waits briefly before queueing'
+);
+assert.deepEqual(
+  JSON.parse(JSON.stringify(context.keyboardPlan({ key: 'Enter' }, { now: 1240, lastPlainEnterAt: 1000 }))),
+  { mode: 'immediate', delayMs: 0, nextPlainEnterAt: 0, doubleEnter: true },
+  'second Enter inside the window requests an immediate send'
+);
+assert.deepEqual(
+  JSON.parse(JSON.stringify(context.keyboardPlan({ key: 'Enter' }, { now: 1301, lastPlainEnterAt: 1000 }))),
+  { mode: 'queue', delayMs: 300, nextPlainEnterAt: 1301, doubleEnter: false },
+  'late second Enter starts a new single-Enter queue action'
+);
+
 const background = fs.readFileSync(path.join(root, 'src', 'background.js'), 'utf8');
 const content = fs.readFileSync(path.join(root, 'src', 'content', 'part-02.js'), 'utf8');
 const popup = fs.readFileSync(path.join(root, 'src', 'popup.html'), 'utf8');
-assert.match(background, /2026-08-10\.2-gemini-quill-replace/);
-assert.match(content, /2026-08-10\.2-gemini-quill-replace/);
-assert.match(popup, /Ready_Ai 0\.3\.9 · 2026-08-10\.2/);
-assert.match(popup, /version-pill">0\.3\.9 · 2026-08-10\.2</);
+assert.match(background, /2026-10-02\.7-safe-session-recovery/);
+assert.match(content, /2026-10-02\.7-safe-session-recovery/);
+assert.match(popup, /Ready_Ai 0\.3\.16/);
+assert.match(popup, /version-pill">v0\.3\.16</);
 assert.match(background, /stage: 'composer_busy'/);
 assert.match(background, /document\.execCommand\('selectAll', false, null\)/);
 assert.match(background, /inputType: 'insertReplacementText'/);
@@ -100,18 +118,68 @@ assert.match(background, /paragraph\.appendChild\(document\.createTextNode\(next
 const part07 = fs.readFileSync(path.join(root, 'src', 'content', 'part-07.js'), 'utf8');
 assert.match(part07, /options\.source === 'resume_button'/);
 assert.match(part07, /enqueueSteeringPrompt\(text, \{ files, holdForFirstChatGptTurn \}\)/);
-assert.match(part07, /!holdForFirstChatGptTurn && canAutoSendSteeringNow\(\)/);
 assert.match(part07, /async function sendChatGptImmediateViaStableControls/);
 assert.match(part07, /chatgpt_interrupt_then_send/);
 assert.match(part07, /chatgpt_generation_finished_then_send/);
 assert.match(part07, /앞선 전송을 마무리한 뒤 Ctrl\+Enter를 바로 실행합니다/);
 assert.equal((part07.match(/requestChatGptNativeImmediateSteer\(/g) || []).length, 1, 'the React fiber route remains compatibility-only and is no longer called');
-assert.doesNotMatch(part10, /steeringComposerSubmitAt|now - steeringComposerSubmitAt < 160/);
+assert.match(part10, /getSteeringComposerKeyboardPlan/);
+assert.match(part10, /doubleEnterWindowMs/);
+assert.match(part10, /delayMs: keyboardPlan\.delayMs/);
+assert.match(part07, /refreshSteeringGeneratingStateBeforeQueueSubmit/);
+assert.match(part07, /!generatingNow && canAutoSendSteeringNow\(\)/);
 assert.match(part10, /handledSteeringComposerKeydowns = new WeakSet\(\)/);
+
+const geminiQueueContext = {};
+vm.createContext(geminiQueueContext);
+vm.runInContext(
+  `${extractSimpleFunction(part07, 'refreshSteeringGeneratingStateBeforeQueueSubmit')}\n`
+    + `${extractSimpleFunction(part07, 'submitSteeringInput')}\n`
+    + 'this.submit = submitSteeringInput;',
+  geminiQueueContext
+);
+let geminiQueuedCount = 0;
+let geminiScheduledCount = 0;
+let geminiAutoSendTimerClearCount = 0;
+const geminiSteeringInput = { value: '생성 중 단일 Enter 후속 지시' };
+Object.assign(geminiQueueContext, {
+  isGenerating: false,
+  activeSite: { key: 'gemini', detection: 'gemini' },
+  completionStatus: 'completed',
+  steeringLastCompletionAt: 100,
+  steeringAdvancedEnabled: false,
+  maybeRescanShadowRoots() {},
+  detectGenerating: () => true,
+  clearSteeringAutoSendTimer: () => { geminiAutoSendTimerClearCount += 1; },
+  markSteeringGenerationObserved() {},
+  armSteeringTurnCompletionWatchdog() {},
+  getSteeringTurnWatchdogDelayMs: () => 12000,
+  ensurePolling() {},
+  scheduleCheck() {},
+  updateTitleBadge() {},
+  ensureSteeringUi: () => ({ input: geminiSteeringInput }),
+  cloneSteeringAttachmentsForQueue: () => [],
+  getSiteKey: () => 'gemini',
+  hasChatGptConversationTurns: () => true,
+  enqueueSteeringPrompt: () => { geminiQueuedCount += 1; },
+  setSteeringDraftText() {},
+  clearSteeringDraftAttachments() {},
+  canAutoSendSteeringNow: () => true,
+  getSteeringQueueCountLabel: () => '대기중: 1',
+  setSteeringStatus() {},
+  updateSteeringUi() {},
+  scheduleSteeringQueueProcessing: () => { geminiScheduledCount += 1; },
+});
+geminiQueueContext.submit();
+assert.equal(geminiQueuedCount, 1, 'Gemini generating-time single Enter adds exactly one queue item');
+assert.equal(geminiScheduledCount, 0, 'live Gemini generation blocks stale-cache immediate processing');
+assert.equal(geminiAutoSendTimerClearCount, 1, 'live Gemini generation cancels an already scheduled queue send');
+assert.equal(geminiQueueContext.isGenerating, true, 'live Gemini generation refreshes the cached state before routing');
 
 vm.runInContext(
   `${extractSimpleFunction(part07, 'getVisibleChatGptStopButton')}\n`
     + `${extractSimpleFunction(part07, 'waitForChatGptUserTurnText')}\n`
+    + `${extractSimpleFunction(part07, 'waitForChatGptComposerSubmissionStart')}\n`
     + `${extractSimpleFunction(part07, 'sendChatGptImmediateViaStableControls')}\n`
     + 'this.stableImmediate = sendChatGptImmediateViaStableControls;',
   context
@@ -137,6 +205,7 @@ async function runStableImmediateCases() {
   context.findNearbySendButton = () => null;
   context.requestSubmitComposer = () => false;
   context.dispatchSubmitKey = () => false;
+  context.detectChatGptGeneratingLight = () => false;
 
   const interrupted = await context.stableImmediate(composer, 'CTRL_OK', 3000);
   assert.equal(interrupted.ok, true, 'Ctrl+Enter interrupts an active response and sends');

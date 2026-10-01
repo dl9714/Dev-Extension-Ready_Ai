@@ -2,7 +2,11 @@
 
 ## Active Chrome Load Path
 
-On this machine, Chrome's unpacked Ready_Ai entry currently points to:
+On this Mac, Chrome's unpacked Ready_Ai entry in the 재헌 profile points to:
+
+`/Users/clean/Develop/project-extension/Ai_ready`
+
+The Windows load paths below are historical; verify the current profile's actual path before copying files. The earlier Windows entry pointed to:
 
 `C:\Users\dl971\Development\project-extension\Ready_Ai`
 
@@ -25,7 +29,14 @@ Gemini and AI Studio use Google AI title safe mode. Do not inject the main-world
 The extension must not declare the full split content scripts for ChatGPT in
 `manifest.json`. ChatGPT uses only `src/content/chatgpt-bootstrap.js`, matched
 to top frames. The shim sends `ensure_content_for_current_chatgpt_tab`, then
-the background injects the split files into that same top frame. Do not add
+the background injects the split files into that same top frame. The bootstrap
+runs at `document_end`; programmatic ChatGPT injection uses `injectImmediately`
+so neither stage waits for `document_idle` or slow images/frames. If injection
+arrives before `body` exists, a temporary observer starts monitoring as soon as it
+appears, without waiting for deferred site scripts or `DOMContentLoaded`.
+Concurrent bootstrap/navigation requests share an in-flight operation per document,
+and known document IDs bind injection to that navigation, including same-URL reloads.
+Do not add
 `all_frames`, `match_about_blank`, or the full `part-*.js` files to the ChatGPT
 manifest entry.
 
@@ -50,3 +61,35 @@ Manual injection load order:
 `src/content.js` was removed to avoid maintaining two copies of the same content script. If content logic changes, update the split files that are listed in `CONTENT_SCRIPT_FILES` inside `src/background.js`.
 
 Do not re-add a ChatGPT `content_scripts` block to `manifest.json`, do not set `all_frames: true`, and do not restore `match_about_blank` for ChatGPT. Those settings wake too many frames/tabs and can make Chrome lag when several ChatGPT tabs are open.
+
+## Follow-up session recovery (0.3.14)
+
+ChatGPT queues, drafts and actual file bytes are isolated by tab and conversation ID.
+SPA navigation keeps each conversation's live state; returning restores that state
+and resumes only its own queue after the matching conversation has rendered.
+The first submission from a blank conversation migrates that same queue to its new
+conversation ID and clears the blank-conversation backup.
+
+The extension service worker stores metadata and bounded file chunks in its own
+IndexedDB (`ready-ai-followups`), independent of ChatGPT storage. A full page reload
+restores the queue paused for delivery review. Reinjection captures live state before
+resetting globals, removes old event listeners and retains the same File objects.
+Incomplete restoration must never overwrite a complete backup. Late asynchronous
+send results cannot remove items from a different conversation.
+Each restoration has its own sequence, so returning A -> B -> A cannot make an
+older attachment load current again or unlock an unfinished newer restoration.
+Restoration keeps the current visit's session token instead of adopting the saved
+token; a send from an earlier visit cannot become current again on return.
+Panel open/closed state participates in the persistence signature.
+An older service worker accepts a newer compatible content build instead of
+repeatedly reinjecting it. Compatibility handshake versions remain stable.
+
+Response completion requires the new assistant turn's finalized UI; elapsed time,
+an existing Pro response or a cleared composer cannot acknowledge a new queued send.
+Only the confirmed item ID is removed, even if the user reorders during dispatch.
+
+The popup's `지금 사용하기` / `지금 사용 안 하기` control uses `readyAiEnabled`.
+Turning it off stops monitoring, UI, notifications and automatic dispatch while
+preserving sessions, and pauses queues in every remembered conversation. Turning
+it on preserves the pause on existing queued work.
+Closing a tab deletes every conversation's metadata and file chunks for that tab.
